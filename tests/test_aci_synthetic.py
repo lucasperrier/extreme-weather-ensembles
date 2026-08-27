@@ -4,10 +4,6 @@ This file is the contract that src/xconformal/aci.py is implemented against. It
 is written in full and marked xfail until aci.py exists; when the
 implementation lands, these turn XPASS and the markers come off.
 
-TODO(lucas): [Thu] Once aci.py is implemented, delete `pending_aci` and its
-decorators. An XPASS in the pytest summary is the signal that a test is ready
-to be un-marked.
-
 Why the numbers below are what they are, so you can change them safely:
 
 * The deterministic ACI guarantee bounds the empirical coverage error over T
@@ -27,12 +23,6 @@ import numpy as np
 import pytest
 
 from xconformal import aci, config
-
-pending_aci = pytest.mark.xfail(
-    raises=NotImplementedError,
-    strict=False,
-    reason="TODO(lucas): [Thu] aci.py is a stub; this test defines its contract",
-)
 
 # ---- synthetic stream parameters -----------------------------------------
 T = 20_000          # stream length
@@ -95,7 +85,6 @@ def test_raw_ensemble_interval_is_miscalibrated():
 # ---------------------------------------------------------------------------
 
 
-@pending_aci
 def test_aci_converges_to_target_coverage():
     """Per-gridpoint empirical coverage converges to 1 - alpha within TOL."""
     ensembles, truths = synthetic_stream()
@@ -120,7 +109,6 @@ def test_aci_converges_to_target_coverage():
         )
 
 
-@pending_aci
 def test_aci_corrects_a_deliberately_miscalibrated_input():
     """A badly under-dispersed ensemble is pulled up to target; c goes positive.
 
@@ -144,12 +132,17 @@ def test_aci_corrects_a_deliberately_miscalibrated_input():
     assert controller.c[0] > 0.5, (
         f"c must grow to widen an under-dispersed interval, ended at {controller.c[0]:.3f}"
     )
-    assert np.all(result.upper - result.lower >= raw_upper - raw_lower - 1e-12), (
-        "every corrected interval must be at least as wide as the raw one here"
+    # ACI widens on AGGREGATE, and cannot promise it step by step: the first
+    # update on a COVERED outcome sets c = eta*(0 - alpha) < 0, so at least one
+    # early interval is necessarily narrower than raw. Measured on this stream:
+    # exactly 1 step of 20000, at step 5, c = -0.002. Asserting the per-step
+    # version would be asserting something the update rule contradicts.
+    assert (result.upper - result.lower).mean() > (raw_upper - raw_lower).mean(), (
+        "the corrected interval must be wider than raw on average for an "
+        "under-dispersed ensemble"
     )
 
 
-@pending_aci
 def test_aci_shrinks_an_over_dispersed_input():
     """An over-dispersed ensemble is pulled down to target; c goes negative."""
     ensembles, truths = synthetic_stream(sigmas=(2.0,))
@@ -164,7 +157,6 @@ def test_aci_shrinks_an_over_dispersed_input():
     assert controller.c[0] < 0.0, f"c must go negative to narrow, ended at {controller.c[0]:.3f}"
 
 
-@pending_aci
 def test_tau_delay_freezes_c_for_the_first_tau_steps():
     """Feedback from step t reaches c at step t + tau, and no sooner.
 
@@ -193,7 +185,6 @@ def test_tau_delay_freezes_c_for_the_first_tau_steps():
         )
 
 
-@pending_aci
 def test_delay_costs_coverage_accuracy_but_not_convergence():
     """A longer delay adds lag, not bias: both taus still land on target."""
     ensembles, truths = synthetic_stream(sigmas=(0.5, 2.0))
@@ -216,7 +207,6 @@ def test_delay_costs_coverage_accuracy_but_not_convergence():
 # ---------------------------------------------------------------------------
 
 
-@pending_aci
 def test_both_adaptation_spaces_satisfy_the_adapter_interface():
     ensembles, _ = synthetic_stream(n_time=10)
     c = np.zeros(len(SIGMAS))
@@ -237,7 +227,6 @@ def test_both_adaptation_spaces_satisfy_the_adapter_interface():
         assert np.all(wide_lo <= lower + 1e-12) and np.all(wide_hi >= upper - 1e-12)
 
 
-@pending_aci
 def test_quantile_space_reports_saturation_on_an_underdispersed_stream():
     """Quantile-space adaptation cannot widen past the ensemble min/max.
 
@@ -273,7 +262,6 @@ def test_quantile_space_reports_saturation_on_an_underdispersed_stream():
     )
 
 
-@pending_aci
 def test_reset_restores_initial_state():
     ensembles, truths = synthetic_stream(sigmas=(0.5,), n_time=100)
     controller = aci.DelayedACI(
@@ -285,3 +273,158 @@ def test_reset_restores_initial_state():
     assert np.all(controller.c == 0.25)
     second = controller.run(ensembles, truths)
     assert np.array_equal(first.c_history, second.c_history), "run() must be reproducible"
+
+
+# ---------------------------------------------------------------------------
+# Irregular init spacing.
+#
+# The real archive is not evenly spaced: 2020 is thinned to every 4th day and
+# 2021 is daily, so the stream changes cadence mid-run at the year boundary.
+# tau is 5 DAYS throughout -- a physical delay set by the forecast lead, not a
+# number of rows in an array. An implementation that counts steps instead of
+# days silently uses 20 days of delay in the thinned segment and 5 in the dense
+# one, and nothing about the output looks wrong.
+#
+# This test pins the datetime-queue implementation: hold
+# (verification_time, err) and, at each init, apply every entry whose
+# verification_time has passed. The year boundary is then not a special case;
+# it is just a change in how often the queue is drained.
+# ---------------------------------------------------------------------------
+
+WIDE_SPACING_DAYS = 4
+TAU_DAYS = 5
+T0 = np.datetime64("2020-01-02T00", "h")
+
+
+def spaced_init_times(n_time: int, wide_fraction: float = 0.25) -> np.ndarray:
+    """Init times: the first `wide_fraction` at 4-day spacing, then daily."""
+    n_wide = int(n_time * wide_fraction)
+    deltas = np.array([WIDE_SPACING_DAYS] * n_wide + [1] * (n_time - n_wide))
+    offsets = np.concatenate([[0], np.cumsum(deltas)[:-1]])
+    return T0 + offsets.astype("timedelta64[D]")
+
+
+def daily_init_times(n_time: int) -> np.ndarray:
+    return T0 + np.arange(n_time).astype("timedelta64[D]")
+
+
+def _run(times, ensembles, truths, n_grid):
+    controller = aci.DelayedACI(
+        grid_shape=(n_grid,), alpha=ALPHA, eta=ETA,
+        tau=np.timedelta64(TAU_DAYS, "D"), adapter=aci.VariableSpaceAdapter(),
+    )
+    return controller, controller.run(ensembles, truths, init_times=times)
+
+
+def test_irregular_spacing_still_converges():
+    """(a) Coverage reaches 1 - alpha despite the cadence change."""
+    ensembles, truths = synthetic_stream(sigmas=(0.5, 1.0))
+    times = spaced_init_times(len(truths))
+    _, result = _run(times, ensembles, truths, 2)
+
+    cov = empirical_coverage(truths, result.lower, result.upper)
+    for sigma, rate in zip((0.5, 1.0), cov):
+        assert abs(rate - TARGET) < TOL, (
+            f"sigma={sigma}: coverage {rate:.4f} is {abs(rate - TARGET):.4f} from "
+            f"{TARGET} under irregular spacing (tol {TOL})"
+        )
+
+
+def test_no_update_is_applied_before_its_verification_time():
+    """(b) The no-lookahead guarantee, checked against the audit trail.
+
+    Every update must be applied at an init time at or after the verification
+    time of the forecast it came from. This is the property that makes the
+    experiment honest: applying feedback early is using an outcome we could not
+    have known, and it would improve coverage for free.
+    """
+    ensembles, truths = synthetic_stream(sigmas=(0.5, 1.0), n_time=2000)
+    times = spaced_init_times(len(truths))
+    _, result = _run(times, ensembles, truths, 2)
+
+    assert result.update_log, "the controller must expose which updates it applied when"
+    for applied_at, verification_time in result.update_log:
+        assert applied_at >= verification_time, (
+            f"update verifying at {verification_time} was applied at {applied_at} -- "
+            f"that is {(verification_time - applied_at) / np.timedelta64(1, 'D'):.0f} "
+            f"days of lookahead"
+        )
+
+    # ...and nothing due is left unapplied: the queue is drained eagerly, not lazily.
+    tau = np.timedelta64(TAU_DAYS, "D")
+    due = int(np.sum((times + tau) <= times[-1]))
+    assert len(result.update_log) == due, (
+        f"{len(result.update_log)} updates applied but {due} were due by the last init"
+    )
+
+
+def test_spacing_change_leaves_no_trace_beyond_updates_in_flight():
+    """(c) The cadence change is not a special case, only a different queue depth.
+
+    c itself legitimately differs between the two runs and is NOT asserted
+    equal: at 4-day spacing with tau = 5 days, feedback arrives 2 steps after
+    issue rather than 5, so the thinned segment runs on strictly more
+    information per step. What must match is the *mechanism* -- once the stream
+    has been daily for longer than tau, a controller that saw a cadence change
+    must be indistinguishable from one that never did.
+    """
+    ensembles, truths = synthetic_stream(sigmas=(0.5, 1.0), n_time=2000)
+    n_time = len(truths)
+    switched, res_switched = _run(spaced_init_times(n_time), ensembles, truths, 2)
+    uniform, res_uniform = _run(daily_init_times(n_time), ensembles, truths, 2)
+
+    # In a steady daily stream, exactly tau updates are in flight at any time.
+    n_wide = int(n_time * 0.25)
+    tail = slice(n_wide + TAU_DAYS + 1, None)
+    assert np.all(res_switched.pending_depth[tail] == TAU_DAYS), (
+        f"after the change to daily, in-flight updates should settle to {TAU_DAYS}, "
+        f"saw {np.unique(res_switched.pending_depth[tail])}"
+    )
+    assert np.all(res_uniform.pending_depth[tail] == TAU_DAYS)
+
+    # In the 4-day segment the same rule gives a shallower queue: an entry
+    # issued at day d is due at d+5 and drained at the next init, day d+8.
+    steady_wide = slice(4, n_wide)
+    expected = int(np.ceil(TAU_DAYS / WIDE_SPACING_DAYS))
+    assert np.all(res_switched.pending_depth[steady_wide] == expected), (
+        f"at {WIDE_SPACING_DAYS}-day spacing with tau={TAU_DAYS}d the queue should "
+        f"hold {expected}, saw {np.unique(res_switched.pending_depth[steady_wide])}"
+    )
+
+    # Both drain one update per step once daily, so neither loses or repeats work.
+    for name, result in (("switched", res_switched), ("uniform", res_uniform)):
+        applied = np.asarray(result.updates_applied)
+        assert np.all(applied[tail] == 1), (
+            f"{name}: a steady daily stream must apply exactly one update per step, "
+            f"saw {np.unique(applied[tail])}"
+        )
+
+    # And the cadence change costs nothing in the end: both converge.
+    for name, result in (("switched", res_switched), ("uniform", res_uniform)):
+        cov = empirical_coverage(truths, result.lower, result.upper)
+        assert np.all(np.abs(cov - TARGET) < 0.05), f"{name}: coverage {cov}"
+
+
+def test_tau_is_physical_days_not_array_rows():
+    """A thinned stream must not silently multiply the delay by the stride.
+
+    With 4-day inits and tau = 5 days, feedback is due after 5 days and drained
+    at the next init (8 days). A step-counting implementation would wait 5
+    INITS, i.e. 20 days -- four times the intended delay, with no visible
+    symptom.
+    """
+    ensembles, truths = synthetic_stream(sigmas=(0.5,), n_time=400)
+    times = T0 + (np.arange(400) * WIDE_SPACING_DAYS).astype("timedelta64[D]")
+    controller = aci.DelayedACI(
+        grid_shape=(1,), alpha=ALPHA, eta=ETA,
+        tau=np.timedelta64(TAU_DAYS, "D"), adapter=aci.VariableSpaceAdapter(),
+    )
+    result = controller.run(ensembles, truths, init_times=times)
+
+    # c must move at step 2 (day 8 >= day 5), not step 5.
+    assert np.all(result.c_history[:2] == 0.0), "no feedback is due before day 5"
+    assert result.c_history[2] != 0.0, (
+        "feedback issued at day 0 is due at day 5 and must be applied at the "
+        "first init at or after it (day 8, step 2)"
+    )
+    assert np.all(result.pending_depth[2:] == 2)

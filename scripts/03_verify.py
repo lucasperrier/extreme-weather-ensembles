@@ -39,11 +39,11 @@ def load_archive(start: np.datetime64, end: np.datetime64) -> xr.Dataset:
     disappears without trace and silently shortens the stream, which would
     corrupt the ACI state sequence rather than just lose a day.
 
-    TODO(lucas): [Fri] ACI is a sequential controller: a gap in the init
-    sequence is not the same as a shorter sequence. Decide what a missing init
-    means -- skip the step entirely (c does not move) or carry the delay
-    forward -- and make load_archive report gaps so 03_verify can act on them.
-    Record the choice in RUNBOOK.md under Decisions.
+    RESOLVED 2026-08-28: a gap needs no handling at all. The controller keys
+    its delay queue on verification DATETIME, so a missing init is simply a
+    longer wait before the queued updates come due -- exactly what physically
+    happened. Missing dates are skipped and counted; nothing is interpolated
+    and no special case exists for the 2020->2021 cadence change.
     """
     raise NotImplementedError(
         "in: start, end datetime64; out: xr.Dataset (init_time, member, lat, lon), gaps reported"

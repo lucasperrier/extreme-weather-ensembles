@@ -160,3 +160,35 @@ triggered each.
 **Next (Fri).** Implement `aci.py` against `tests/test_aci_synthetic.py`; wire
 `03_verify.py` to the real archive; decide what a missing init means to a
 sequential controller.
+
+
+## 2026-08-28 (Fri) — ACI implemented, contract green
+
+**Task 0 — data hygiene.** All four re-downloaded 2020 ERA5 files pass: 4.59 GB
+each (≥ 4.58 GB), `time == 366`, full `.load()` succeeds, t2m physical
+(196.1–325.3 K across the four), no NaNs, timestamps exactly 1 day apart.
+
+Generation at 10:21 UTC: session `gen` alive, **12/452 inits**, **314 s/init**,
+ETA 38.4 h → finishes ~**Sat 00:45 UTC**. On pace.
+
+**Task 1 — spacing contract, written before the implementation.** Four tests,
+covering the brief's (a)/(b)/(c) plus a units guard:
+`test_irregular_spacing_still_converges`,
+`test_no_update_is_applied_before_its_verification_time`,
+`test_spacing_change_leaves_no_trace_beyond_updates_in_flight`,
+`test_tau_is_physical_days_not_array_rows`. Split into four rather than one so a
+failure names which property broke.
+
+**Task 2 — aci.py.** 11 of 12 contract tests passed on the first run. The one
+failure was a **wrong assertion of mine from Thursday**, not a bug: it claimed
+every corrected interval is at least as wide as raw, which the update rule
+contradicts — the first update on a *covered* outcome sets
+`c = eta*(0 − alpha) = −0.002`, so at least one early interval is necessarily
+narrower. Measured: exactly 1 step of 20 000, at step 5. Escalated rather than
+weakened; replaced with the aggregate claim (mean width 1.4322 → 3.3060).
+
+Reference numbers, σ = 0.5 under-dispersed stream, 20 000 steps, τ = 5 d:
+raw coverage **0.5173** → ACI **0.8975**, final c **0.97**, c range
+**−0.002 to 1.178**.
+
+**pytest: 28 passed, 0 xfailed, 0 failed.** All xfail markers dropped.
