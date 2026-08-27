@@ -1,0 +1,15 @@
+[project]
+name = "xconformal"
+version = "0.0.1"
+description = "Conditional coverage for AI weather ensembles: per-bin evaluation of adaptive conformal inference"
+requires-python = ">=3.11"
+dependencies = ["numpy", "xarray", "netCDF4", "pandas", "matplotlib"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q -ra"
+filterwarnings = ["error::RuntimeWarning"]
