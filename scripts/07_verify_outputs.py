@@ -36,12 +36,12 @@ REQUIRED_ATTRS = (
 )
 
 
-def check(path: Path, members: int, leads: int) -> list[str]:
-    """Return a list of problems with one file; empty means it passed."""
-    problems = []
+def check(path: Path, members: int, leads: int) -> tuple[list[str], float, float, float]:
+    """Check one file. Returns (problems, min_K, max_K, spread_K); [] means it passed."""
+    problems: list[str] = []
     with xr.open_dataset(path, decode_timedelta=False) as ds:
         if "t2m" not in ds.data_vars:
-            return [f"no t2m variable (has {list(ds.data_vars)})"]
+            return [f"no t2m variable (has {list(ds.data_vars)})"], 0.0, 0.0, 0.0
         da = ds["t2m"]
         expected = ("member", "lead", "latitude", "longitude")
         if da.dims != expected:
@@ -71,7 +71,6 @@ def check(path: Path, members: int, leads: int) -> list[str]:
             problems.append(f"missing provenance attrs: {missing}")
 
         return problems, lo, hi, spread
-    return problems
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -90,8 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     print("-" * 60)
     failed = 0
     for path in files:
-        result = check(path, args.members, leads)
-        problems, lo, hi, spread = result if isinstance(result, tuple) else (result, 0, 0, 0)
+        problems, lo, hi, spread = check(path, args.members, leads)
         status = "ok" if not problems else "; ".join(problems)
         failed += bool(problems)
         print(f"{path.name:<18s} {lo:>7.1f} {hi:>7.1f} {spread:>9.2f}  {status}")

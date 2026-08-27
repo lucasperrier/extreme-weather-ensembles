@@ -148,6 +148,11 @@ xarray decodes a timedelta-like `units` into `timedelta64` on open, so a later
 otherwise. Seeds are date-derived, so the two discarded files regenerate
 bit-identically.
 
+**Verified.** First 10 files, 10:06 UTC: all pass. Shapes (20, 5, 121, 240)
+float32, no NaNs, ranges 217.4-315.3 K, day-5 member spread 0.90-1.03 K
+(non-zero, and under-dispersed as the paper expects), full provenance attrs
+present. `lead` decodes as int8 so `ds.sel(lead=5)` works. Left running.
+
 **Decided.** Init window, target variable, adaptation space, threshold method
 and init grid — all recorded in RUNBOOK "Decisions" with the rule that
 triggered each.
