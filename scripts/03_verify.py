@@ -139,6 +139,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tau-days", type=int, default=config.TAU)
     parser.add_argument("--no-standardize", action="store_true",
                         help="disable the per-gridpoint ACI scale (diagnostic only)")
+    parser.add_argument("--no-warm-start", dest="warm_start", action="store_false",
+                        help="single sequential calibration pass instead of cycling")
+    parser.add_argument("--warm-tol", type=float, default=0.01,
+                        help="stop cycling when pass-mean c changes by less than this")
     parser.add_argument("--suffix", default="", help="appended to output filenames")
     return parser.parse_args(argv)
 
@@ -189,48 +193,74 @@ def main(argv: list[str] | None = None) -> int:
         grid_shape=truth.shape[1:], alpha=args.alpha, eta=args.eta,
         tau=np.timedelta64(args.tau_days, "D"), adapter=adapter,
     )
-    result = controller.run(ensembles, truth, init_times=init_times)
-    raw_lo, raw_hi = aci.raw_interval(ensembles)
-
-    covered = {
-        "raw": coverage.covered(truth, raw_lo, raw_hi),
-        method: coverage.covered(truth, result.lower, result.upper),
-    }
 
     # ---- evaluation window ----------------------------------------------
     keep = init_times >= np.datetime64(args.eval_start, "h")
     n_eval = int(keep.sum())
     print(f"eval    : {n_eval} of {keep.size} inits at or after {args.eval_start} "
-          f"({keep.size - n_eval} calibration, used for updates only)")
+          f"({keep.size - n_eval} calibration)")
     if n_eval == 0:
         print("!! no inits in the evaluation window -- nothing to report yet")
         return 2
 
+    # ---- warm start on the calibration year only ------------------------
+    # ACI's time constant here is ~80 inits, so a single 92-init calibration
+    # pass leaves the controller still climbing when evaluation opens. Cycling
+    # the calibration year removes that transient without touching eta and
+    # without the evaluation year ever informing c.
+    n_passes, pass_means = 0, []
+    calibration = ~keep
+    if args.warm_start and calibration.any():
+        print(f"\nwarm start on {int(calibration.sum())} calibration inits "
+              f"({init_times[calibration][0]} .. {init_times[calibration][-1]})")
+        n_passes, pass_means, warm_result = aci.warm_start(
+            controller, ensembles[calibration], truth[calibration],
+            init_times[calibration], tol=args.warm_tol,
+        )
+        print(f"  converged after {n_passes} passes, mean c {pass_means[-1]:+.5f}, "
+              f"queue empty: {controller.pending == 0}")
+    elif calibration.any():
+        # Single sequential pass, the un-warm-started behaviour.
+        controller.run(ensembles[calibration], truth[calibration],
+                       init_times[calibration])
+
+    # The evaluation run starts from the settled c with an empty queue.
+    result = controller.run(ensembles[keep], truth[keep], init_times=init_times[keep])
+    raw_lo, raw_hi = aci.raw_interval(ensembles[keep])
+    truth_eval = truth[keep]
+
+    covered = {
+        "raw": coverage.covered(truth_eval, raw_lo, raw_hi),
+        method: coverage.covered(truth_eval, result.lower, result.upper),
+    }
+
     weights = coverage.latitude_weights(latitudes)[None, :, None]
+    eval_times = init_times[keep]
 
     # ---- (1) marginal ----------------------------------------------------
     print("\n--- (1) marginal coverage, area-weighted ---")
     marginal_rows = []
     for name, is_covered in covered.items():
-        rate, count = coverage.marginal_coverage(is_covered[keep], weights=weights)
-        unweighted, _ = coverage.marginal_coverage(is_covered[keep])
+        rate, count = coverage.marginal_coverage(is_covered, weights=weights)
+        unweighted, _ = coverage.marginal_coverage(is_covered)
         marginal_rows.append({"method": name, "coverage": rate,
                               "coverage_unweighted": unweighted, "count": count,
-                              "target": config.TARGET_COVERAGE})
+                              "target": config.TARGET_COVERAGE,
+                              "warm_start_passes": n_passes})
         print(f"  {name:<18s} {rate:.4f}  (unweighted {unweighted:.4f}, n={count:,})")
 
     # ---- (2) c_t transient ----------------------------------------------
     print("\n--- (2) c_t at the evaluation boundary ---")
     probes = probe_indices(latitudes, longitudes)
     c_rows = []
-    for t, init in enumerate(init_times):
+    for t, init in enumerate(eval_times):
         for name, (i, j, lat, lon) in probes.items():
             c_rows.append({"init_time": init, "probe": name, "latitude": lat,
                            "longitude": lon, "c": float(result.c_history[t, i, j])})
     c_frame = pd.DataFrame(c_rows)
 
-    boundary = int(np.argmax(keep)) if keep.any() else 0
-    window = min(30, max(1, boundary))
+    boundary = 0  # the evaluation run now starts at the boundary by construction
+    window = min(30, max(1, len(eval_times) - 1))
     print(f"  {'probe':<14s} {'lat':>6s} {'lon':>6s} {'c@bound':>9s} {'c@end':>9s} "
           f"{'drift/init':>11s}")
     for name, (i, j, lat, lon) in probes.items():
@@ -238,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
         # Drift is the mean per-init change over the run-up to the boundary. If
         # the transient is dead this is ~0; if c is still climbing it is not,
         # and the calibration year was too short.
-        drift = float((series[boundary] - series[boundary - window]) / window) if boundary else float("nan")
+        drift = float((series[window] - series[0]) / window)
         print(f"  {name:<14s} {lat:>+6.1f} {lon:>6.1f} {series[boundary]:>+9.4f} "
               f"{series[-1]:>+9.4f} {drift:>+11.5f}")
     print(f"  all gridpoints @boundary: c in "
@@ -265,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     if scale_field is None:
         scale_field = 1.0
     def _coverage_at(c_const):
-        padded = coverage.covered(truth, raw_lo - c_const * scale_field,
+        padded = coverage.covered(truth_eval, raw_lo - c_const * scale_field,
                                   raw_hi + c_const * scale_field)
         return coverage.marginal_coverage(padded, weights=weights)[0]
 
@@ -280,32 +310,36 @@ def main(argv: list[str] | None = None) -> int:
     eps = 0.02
     slope = (_coverage_at(c_star / 2 + eps) - _coverage_at(c_star / 2 - eps)) / (2 * eps)
     tau_inits = 1.0 / (args.eta * slope) if slope > 0 else float("inf")
-    n_calibration = int((~keep).sum())
+    n_calibration = int(calibration.sum())
     reached = 1.0 - np.exp(-n_calibration / tau_inits) if n_calibration else 0.0
     print(f"  equilibrium c*          : {c_star:.4f} "
           f"(median padding {float(np.median(c_star * scale_field)):.2f} K)")
     print(f"  dcoverage/dc            : {slope:.3f} per unit c")
     print(f"  ACI time constant       : {tau_inits:.0f} inits at eta={args.eta}")
     print(f"  calibration inits        : {n_calibration}")
-    if n_calibration:
-        print(f"  c reaches {reached * 100:.1f}% of c* by the boundary "
-              f"-> coverage ~{_coverage_at(c_star * reached):.4f}")
-        if reached < 0.9:
-            print("  !! the transient is NOT dead at the evaluation boundary; the "
-                  "reported ACI coverage will be biased low early in the window")
+    if args.warm_start and n_passes:
+        print(f"  warm start cycled the calibration year {n_passes} times, so the "
+              f"controller opens the evaluation window at c = {pass_means[-1]:+.4f} "
+              f"rather than {(1 - np.exp(-n_calibration / tau_inits)) * c_star:+.4f}")
+        print(f"  NOTE c* = {c_star:.4f} is estimated on the EVALUATION data and is "
+              f"seasonal; expect c_t to oscillate over a full year.")
+    elif n_calibration:
+        print(f"  c reaches {(1 - np.exp(-n_calibration / tau_inits)) * 100:.1f}% of c* "
+              f"in a single calibration pass -> coverage ~"
+              f"{_coverage_at(c_star * (1 - np.exp(-n_calibration / tau_inits))):.4f}")
+        print("  !! the transient is NOT dead at the evaluation boundary")
 
     # ---- (3) per-bin -----------------------------------------------------
     print("\n--- (3) per-bin coverage, area-weighted ---")
     masks = binning.bin_masks(p[keep])
     labels = config.p_bin_labels()
-    table = coverage.coverage_table({k: v[keep] for k, v in covered.items()},
-                                    masks, labels, weights=weights)
+    table = coverage.coverage_table(covered, masks, labels, weights=weights)
     print(table.to_string(index=False))
 
     # ---- per-init marginal time series ----------------------------------
     ts_rows = []
-    for t, init in enumerate(init_times):
-        row = {"init_time": init, "in_eval_window": bool(keep[t]),
+    for t, init in enumerate(eval_times):
+        row = {"init_time": init,
                "pending_updates": int(result.pending_depth[t]),
                "updates_applied": int(result.updates_applied[t])}
         for name, is_covered in covered.items():

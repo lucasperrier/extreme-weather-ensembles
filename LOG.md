@@ -192,3 +192,52 @@ raw coverage **0.5173** → ACI **0.8975**, final c **0.97**, c range
 **−0.002 to 1.178**.
 
 **pytest: 28 passed, 0 xfailed, 0 failed.** All xfail markers dropped.
+
+
+### Fri, later — verification on the partial archive
+
+**A silent grid bug, found by check (1).** First run gave raw coverage 0.12 and
+32% of samples in the top `p_t` bin. Diagnosed by round-tripping the model's own
+*input state* — which is ERA5 at the init time — through the same denormalize
+and extract path: 12.7 K RMSE against ERA5, with min and max matching to the
+last bit. Identical values, different arrangement ⇒ a permutation. Brute-forcing
+latitude-flip × longitude-roll found an exact match at **RMSE 0.000000**:
+`model = roll(flip(era5, lat), 120, lon)`.
+
+| quantity | before | after |
+|---|---:|---:|
+| day-1 ensemble-mean RMSE | 12.68 K | **0.73 K** |
+| day-5 ensemble-mean RMSE | 12.91 K | **1.54 K** |
+| mean `p_t` | 0.350 | **0.072** |
+| raw 5–95 coverage | 0.114 | **0.705** |
+
+**The archive is correct and needs no regeneration** — this was read-side only.
+`01_generate.py` untouched (run is live); fix lives in the new
+`xconformal/grid.py`. Every wrong number above was *plausible*, so
+`grid.check_alignment` now runs on every archive load and raises above 3 K.
+
+**Check (2): the calibration year was too short, and is now fixed.**
+Equilibrium padding `c* = 0.1137` (median 0.44 K); `dcoverage/dc ≈ 1.25`; ACI
+time constant `1/(eta·slope) ≈ 80 inits` at `eta = 0.01`. A single 92-init pass
+reaches only **68%** of `c*` → ~0.868 coverage, transient alive well into 2021.
+
+Fixed by cycling the calibration year to equilibrium (`aci.warm_start`). Passes
+carry `c` but **flush-and-clear the queue at each boundary** — otherwise
+December verification times are still pending when the next pass restarts in
+January and all come due at once, in the wrong order relative to that pass's own
+inits. Passes run over **whole years** deliberately: the final pass ends on
+late-December conditions, which is the correct seasonal phase for entering
+January of the evaluation year. Stopping mid-pass would hand 2021 a `c` tuned to
+July.
+
+Caveat carried forward: `c* = 0.114` was estimated from **winter inits only**
+and is seasonal. Expect the full-year `c_t` trajectories to oscillate — that is
+the controller tracking seasonal miscalibration, and it is a figure-worthy
+observation, not an anomaly.
+
+**Six probe gridpoints** for `c_t` (nearest grid cell): tropics ocean
+(0.0, 199.5) central Pacific · tropics land (0.0, 25.5) Congo · midlat ocean
+(45.0, 330.0) N Atlantic · midlat land (45.0, 265.5) US Great Plains · high-lat
+(75.0, 90.0) Siberian Arctic · desert (25.5, 15.0) central Sahara.
+
+**pytest: 30 passed, 0 failed.**

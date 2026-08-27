@@ -428,3 +428,62 @@ def test_tau_is_physical_days_not_array_rows():
         "first init at or after it (day 8, step 2)"
     )
     assert np.all(result.pending_depth[2:] == 2)
+
+
+# ---------------------------------------------------------------------------
+# Warm start: cycling the calibration year so evaluation opens settled.
+# ---------------------------------------------------------------------------
+
+
+def test_warm_start_converges_and_clears_the_queue_between_passes():
+    """c carries across passes; the in-flight queue does not.
+
+    Carrying the queue would be a real bug rather than an inefficiency: the
+    December verification times still pending at a pass boundary would all come
+    due at the next pass's first January init, in the wrong order relative to
+    that pass's own forecasts.
+    """
+    ensembles, truths = synthetic_stream(sigmas=(0.5, 2.0), n_time=200)
+    times = daily_init_times(len(truths))
+    controller = aci.DelayedACI(
+        grid_shape=(2,), alpha=ALPHA, eta=ETA,
+        tau=np.timedelta64(TAU_DAYS, "D"), adapter=aci.VariableSpaceAdapter(),
+    )
+    n_passes, means, result = aci.warm_start(
+        controller, ensembles, truths, times, tol=0.01, verbose=False
+    )
+
+    assert 1 < n_passes <= 25, f"expected several passes, got {n_passes}"
+    assert controller.pending == 0, "the queue must be empty at a pass boundary"
+    assert abs(means[-1] - means[-2]) < 0.01 * abs(means[-2]), "did not meet the tolerance"
+
+    # A warm-started controller opens the next stream much closer to target
+    # than a cold one does.
+    fresh = aci.DelayedACI(
+        grid_shape=(2,), alpha=ALPHA, eta=ETA,
+        tau=np.timedelta64(TAU_DAYS, "D"), adapter=aci.VariableSpaceAdapter(),
+    )
+    cold = fresh.run(ensembles, truths, init_times=times)
+    warm = controller.run(ensembles, truths, init_times=times)
+    cold_gap = np.abs(empirical_coverage(truths, cold.lower, cold.upper) - TARGET)
+    warm_gap = np.abs(empirical_coverage(truths, warm.lower, warm.upper) - TARGET)
+    assert np.all(warm_gap < cold_gap), (
+        f"warm start should open closer to target: warm {warm_gap} vs cold {cold_gap}"
+    )
+
+
+def test_flush_preserves_the_no_lookahead_audit_trail():
+    """Even a flushed update is logged at a time no earlier than it verified."""
+    ensembles, truths = synthetic_stream(sigmas=(0.5,), n_time=50)
+    times = daily_init_times(len(truths))
+    controller = aci.DelayedACI(
+        grid_shape=(1,), alpha=ALPHA, eta=ETA,
+        tau=np.timedelta64(TAU_DAYS, "D"), adapter=aci.VariableSpaceAdapter(),
+    )
+    controller.run(ensembles, truths, init_times=times)
+    in_flight = controller.pending
+    assert in_flight == TAU_DAYS
+    assert controller.flush() == in_flight
+    assert controller.pending == 0
+    for applied_at, verification_time in controller._update_log:
+        assert applied_at >= verification_time

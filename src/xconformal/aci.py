@@ -65,6 +65,7 @@ __all__ = [
     "DelayedACI",
     "AciResult",
     "raw_interval",
+    "warm_start",
 ]
 
 # Only used to synthesize a daily grid when a caller passes no init times.
@@ -317,6 +318,31 @@ class DelayedACI:
         """One ACI update: c += eta * (err - alpha), in place, over the grid."""
         self.c += self.eta * (err - self.alpha)
 
+    def flush(self, as_of=None) -> int:
+        """Apply every queued update regardless of its verification time, then clear.
+
+        in: optional as_of datetime for the audit trail; out: number applied.
+
+        Only for a pass boundary in :func:`warm_start`, where the calibration
+        year has ended and every queued outcome is by then known. The default
+        as_of is the latest verification time in the queue, so the no-lookahead
+        invariant in the audit trail stays true.
+
+        Never call this mid-stream: it would apply feedback before its
+        verification time relative to the inits that follow.
+        """
+        if not self._pending:
+            return 0
+        latest = max(verification_time for verification_time, _ in self._pending)
+        as_of = latest if as_of is None else max(np.datetime64(as_of).astype("datetime64[h]"), latest)
+        n_applied = 0
+        while self._pending:
+            verification_time, err = self._pending.popleft()
+            self._apply_update(err)
+            self._update_log.append((as_of, verification_time))
+            n_applied += 1
+        return n_applied
+
     def run(self, ensembles, truths, init_times=None) -> AciResult:
         """Run the controller over a whole stream and collect its trace.
 
@@ -405,3 +431,62 @@ def raw_interval(
         np.quantile(ensembles, lower_q, axis=1),
         np.quantile(ensembles, upper_q, axis=1),
     )
+
+
+def warm_start(
+    controller: DelayedACI,
+    ensembles: np.ndarray,
+    truths: np.ndarray,
+    init_times: np.ndarray,
+    max_passes: int = 25,
+    tol: float = 0.01,
+    verbose: bool = True,
+) -> tuple[int, list[float], AciResult]:
+    """Cycle the calibration year until c stops moving, so evaluation starts settled.
+
+    in: a controller, the CALIBRATION stream only, and its init times;
+    out: (n_passes, mean-c after each pass, the final pass's AciResult).
+
+    Why this exists. ACI relaxes towards its equilibrium padding with a time
+    constant of 1/(eta * dcoverage/dc) -- about 80 inits at eta = 0.01 on this
+    archive. A 92-init calibration year therefore reaches only ~68% of the way,
+    and the evaluation year would open with the controller still climbing, its
+    coverage biased low for months. Cycling the calibration data removes that
+    transient without touching eta and without the evaluation year ever
+    informing c.
+
+    Pass semantics, and why they are not obvious:
+
+    * c CARRIES across passes -- that is the entire point.
+    * The in-flight queue is FLUSHED and CLEARED at each pass boundary. It
+      cannot carry: December verification times would still be pending when the
+      next pass restarts in January, so every one of them would come due
+      immediately and in the wrong order relative to the new pass's own inits.
+      Flushing first means the pass's last few days still contribute their
+      feedback; clearing means the next pass starts clean.
+    * Passes run over WHOLE years. The final pass therefore ends on late-December
+      conditions, which is the correct seasonal phase for entering January of
+      the evaluation year. Stopping mid-pass would hand the evaluation year a c
+      tuned to, say, July.
+
+    Convergence: stop when the pass-mean of c changes by less than ``tol``
+    (relative) between consecutive passes.
+    """
+    means: list[float] = []
+    result = None
+    n_passes = 0
+    for n_passes in range(1, max_passes + 1):
+        result = controller.run(ensembles, truths, init_times=init_times)
+        flushed = controller.flush()
+        mean_c = float(np.mean(controller.c))
+        means.append(mean_c)
+        if verbose:
+            change = (
+                abs(mean_c - means[-2]) / max(abs(means[-2]), 1e-12)
+                if len(means) > 1 else float("nan")
+            )
+            print(f"  warm-start pass {n_passes:2d}: mean c {mean_c:+.5f} "
+                  f"(flushed {flushed} in flight, change {change:.2%})")
+        if len(means) > 1 and abs(mean_c - means[-2]) < tol * max(abs(means[-2]), 1e-12):
+            break
+    return n_passes, means, result
