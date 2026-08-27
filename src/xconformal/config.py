@@ -166,11 +166,21 @@ VERIFICATION_YEAR = 2021
 # single stream, so a member's noise depends on how many members shared its
 # pass. Changing this changes the ensemble, and a resumed run must use the
 # same value to stay bit-identical.
-SAMPLING_BATCH_SIZE = 1
+SAMPLING_BATCH_SIZE = 1  # measured 2026-08-27: batching is not faster, see below
 
-# Init spacing in days, per year. Set to >1 to thin an under-budget run.
+# Init spacing in days, per year. Set to >1 to thin an over-budget run.
 # LOCKED: 2021 is never thinned -- it is the reported window.
-INIT_STRIDE_CALIBRATION = 1
+#
+# Chosen 2026-08-27 by the sizing rule (<= 40 h wall clock) at the measured
+# 15.49 s/member on this RTX 4090:
+#     2020 daily      725 inits  62.4 h  OVER
+#     2020 every 2d   543 inits  46.7 h  OVER
+#     2020 every 3d   482 inits  41.5 h  OVER (by 1.5 h)
+#     2020 every 4d   452 inits  38.9 h  <- chosen, 5.3 GB
+# 2020 is calibration only: it warms c_t up and is never reported, so thinning
+# it costs warm-up samples, not evaluation samples. 92 calibration inits still
+# give the controller ~18x tau of settling before the reported window opens.
+INIT_STRIDE_CALIBRATION = 4
 INIT_STRIDE_VERIFICATION = 1
 
 # Leads archived per init, in days. We verify at LEAD_DAYS but store all of

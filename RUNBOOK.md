@@ -91,12 +91,60 @@ debris from a killed run.
   *is* meaningful — that is the 20 GB ephemeral container disk, and it filling
   up is a real failure mode (usually a cache that escaped `/workspace`).
 
-- **`tmux` is not in the image.** Long runs die with the SSH session. Either
-  `apt-get install -y tmux` at the start of the session (it goes on the
-  ephemeral disk and is gone after a restart, so this is a per-pod chore), or
-  use `nohup python scripts/01_generate.py > gen.log 2>&1 &` and tail the log.
-  Because `01_generate.py` is resumable, losing the session costs at most one
-  init.
+- **`tmux` must be reinstalled after every pod restart.** It is present now
+  (`/usr/bin/tmux`) but lives on the ephemeral container disk, not on
+  `/workspace`, so it disappears with the pod. `apt-get install -y tmux` is a
+  per-pod chore. Because `01_generate.py` is resumable, losing a session costs
+  at most one init.
+
+- **The GPU is an RTX 4090 (24 GB), not an A100.** Sizing assumptions written
+  for an 80 GB A100 do not transfer: VRAM caps the member batch size, and
+  per-member timings must be re-measured rather than scaled. Measured
+  2026-08-27: 2.35 s per 24 h denoising step, 14.7 s per 5-day member, serial.
+
+- **`load_module` resolves the deterministic backbones relative to CWD, and
+  fails SILENTLY.** The archesweathergen config lists its four deterministic
+  models as relative paths (`modelstore/archesweather-m-seed0`, ...). If CWD is
+  wrong they are not restored, no exception is raised, and sampling proceeds on
+  uninitialised backbones producing plausible-looking garbage. `generate.py`
+  chdirs to the repo root (which carries a `modelstore` symlink to
+  `$MODEL_ROOT`) and then asserts the right NUMBER of backbones is live. Never
+  remove that assertion.
+
+- **`det_model` vs `det_models`.** This config instantiates `DiffusionModule`,
+  whose `.det_model` is a single `AvgModule` wrapping the four backbones in
+  `.core`. `EnsembleDiffusionModule` instead exposes `.det_models`, a
+  ModuleList. Checking the wrong attribute reports "0 models loaded" on a
+  perfectly healthy module.
+
+- **`DiffusionModule.sample()` takes no `member` kwarg.** It has
+  `**kwargs` that are forwarded to the scheduler, so passing `member=` there
+  does not error at the call site -- it fails deep inside the scheduler step.
+  `member` belongs to `sample_rollout`, which composes
+  `seed = member + 1000*step + batch_nb*1e6` itself.
+
+- **geoarches' collate leaves TensorDict `batch_size` empty.**
+  `_custom_collate_fn` builds each TensorDict without a batch size, so it comes
+  back as `torch.Size([])` even though the tensors inside have a leading
+  dimension. The backbone reads `state.shape[0]` and raises
+  `IndexError: tuple index out of range`. Stamp `td.batch_size = [n]` after
+  collating.
+
+- **`dl_era` downloads every variable and every pressure level** -- about
+  4.6 GB per (year, hour) file. Using it to obtain one surface variable is
+  enormously wasteful: 2011-2019 at four synoptic hours would have been 165 GB
+  to produce a 42 MB threshold field. Stream the slice you need straight from
+  the WeatherBench2 zarr instead and persist only the derived product. Size a
+  download by the answer, not by which script is convenient.
+
+- **`era5-quantiles-2016_2022.nc` is pooled in time.** Its dims are
+  `(quantile, lat, lon)` with no day-of-year, and its levels are
+  `[1e-4, 1e-3, 0.01, 0.99, 0.999, 0.9999]` -- there is no 0.95. It cannot be
+  used as an extreme threshold. See Decisions.
+
+- **The WeatherBench2 zarr stores `(longitude, latitude)`**, the model output
+  and everything in `xconformal` use `(latitude, longitude)`. The loaders in
+  `thresholds.py` transpose to the canonical order on the way out.
 
 - **`pytest` is not installed by default.** `pip install pytest` — it is a
   dev-only dependency and deliberately not in `pyproject.toml`'s runtime deps.
@@ -119,24 +167,15 @@ methods section can be written from this file rather than from memory.
 
 | Date | Decision | Reason |
 |------|----------|--------|
-| — | Inits 2020–2021, not 2023 | upstream WeatherBench2 ERA5 source ends 2021 |
-| — | Store per-member values, not pre-reduced quantiles | 1.7 GB total; keeps `p_t`, other quantile levels and quantile-space ACI recomputable without regenerating |
+| 2026-08-27 | **Year plan locked.** `INIT_START = 2020-01-02`, `INIT_END = 2021-12-26`. 2020 = pure calibration (ACI warm-start, never reported); 2021 = verification. | Start is 2020-01-02 because the model needs `prev_state` at init−24 h and ERA5 begins 2020-01-01T00. End is 2021-12-26 because that is the last init whose +5 day valid time has truth: the WB2 1.5° archive ends 2021-12-31T18 and there is no 2022/2023. |
+| 2026-08-27 | **Target variable: 2m temperature.** T850 fallback not needed. | Confirmed as surface index **2** (`T2m`) in `geoarches.dataloaders.era5.surface_variables`, and present in ERA5 and in the model output. |
+| 2026-08-27 | **ACI adaptation space locked: variable space, standardized.** `lower = q05 − c·s`, `upper = q95 + c·s`, with `s` = per-gridpoint std of the **2020** 0Z t2m series (`t2m_std_2020_0z.nc`). Quantile space stays behind `--space quantile`; `AciResult.saturated_frac` contract stands. | `s` ranges 0.46–23.44 K across the grid — a 50× spread. Without standardizing, one `eta` is far too slow in the tropics and `c` would still be climbing when the record ends. `s` is built from the calibration year only, so the verification year never informs the scaling. |
+| 2026-08-27 | **Threshold: per-gridpoint, per-day-of-year 95th percentile of t2m, 1990–2019, 0Z only, ±15 day window**, streamed from the WB2 zarr to `$DATA_ROOT/thresholds/t2m_p95_clim_1990-2019_0z.nc` (42.5 MB, 907–930 samples/group). | Valid times are all 0Z, so the threshold must condition on valid hour: t2m has a large diurnal cycle, and pooling synoptic hours samples a *mixture*, not a bigger sample of the same distribution. Sample size comes from the day window × years, never from mixing hours. |
+| 2026-08-27 | **Never use a pooled-in-time quantile as the extreme threshold.** This rules out `era5-quantiles-2016_2022.nc` outright. | A quantile taken across all seasons at once is effectively a summer threshold that no winter day can reach, so every "extreme" it flags is a July extreme and the high-`p_t` bins would be pure seasonal aliasing rather than extreme weather. |
+| 2026-08-27 | Store per-member t2m at leads 1–5, float32, one file per init | 11.6 MB/init. Keeps `p_t`, other quantile levels, quantile-space ACI and lead-dependence recomputable without regenerating. |
 
 **Open — must be closed before the paper:**
 
-- [ ] **ACI adaptation space** (`config.ACI_SPACE`, due Fri). Variable-space vs
-      quantile-space. They are not equivalent: quantile-space saturates once the
-      interval reaches the ensemble min/max and cannot widen further, which is
-      likely to bite exactly in the high-`p_t` bins. Decide on the **burn-in
-      window only**, never on the reported evaluation window, and say in the
-      paper that the choice was made pre-evaluation.
-- [ ] **Target variable** (`config.TARGET_VAR`, due Thu). 2m temperature if the
-      model output carries it, else T850. Run `00_inspect_data.py`.
-- [ ] **Threshold source** (`thresholds.build_thresholds`, due Thu). Read the
-      95th percentile from `era5_240_clim.nc` if it has one; otherwise compute
-      it from the ERA5 history. The climatology may hold means only.
-- [ ] **Day-of-year smoothing for the threshold** (due Fri). None, or a ±7-day
-      window so each day-of-year group has enough samples.
 - [ ] **Missing inits in the ACI stream** (due Fri). A gap is not the same as a
       shorter sequence — decide whether a missing init skips the update or
       carries the delay forward.
