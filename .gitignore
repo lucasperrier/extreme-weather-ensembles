@@ -18,3 +18,8 @@ paper/*.out
 paper/*.bbl
 paper/*.blg
 paper/*.pdf
+
+# Symlink to $MODEL_ROOT, needed because the model config uses relative
+# "modelstore/..." paths. Created per-pod, not tracked.
+modelstore
+thresholds.log

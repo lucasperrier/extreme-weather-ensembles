@@ -56,9 +56,20 @@ def era5_file(year: int, hour: int) -> Path:
 GEN_MODEL_NAME = "archesweathergen"
 GEN_MODEL_DIR = MODEL_ROOT / GEN_MODEL_NAME
 
+# Upstream WeatherBench2 stores. We stream slices from these; we never mirror
+# them. dl_era pulls every variable and level (~4.6 GB per year-hour), so it is
+# the wrong tool for deriving a single-variable field -- see build_thresholds.
+WB2_ERA5_ZARR = (
+    "gs://weatherbench2/datasets/era5/"
+    "1959-2022-6h-240x121_equiangular_with_poles_conservative.zarr"
+)
+
 # Our own derived products.
-FORECAST_DIR = DATA_ROOT / "forecasts" / GEN_MODEL_NAME
-THRESHOLD_PATH = DATA_ROOT / "derived" / "clim_p95.nc"
+ENSEMBLE_DIR = DATA_ROOT / "ensembles"
+FORECAST_DIR = ENSEMBLE_DIR  # alias; scripts/03 and /04 use FORECAST_DIR
+THRESHOLD_DIR = DATA_ROOT / "thresholds"
+THRESHOLD_PATH = THRESHOLD_DIR / "t2m_p95_clim_1990-2019_0z.nc"
+ACI_SCALE_PATH = THRESHOLD_DIR / "t2m_std_2020_0z.nc"
 COVERAGE_TABLE_PATH = EVAL_ROOT / "coverage_by_bin.csv"
 MARGINAL_TABLE_PATH = EVAL_ROOT / "coverage_marginal.csv"
 FIGURE_PATH = EVAL_ROOT / "fig_coverage_by_bin.pdf"
@@ -94,7 +105,7 @@ def validate_paths(*, require_model: bool = False, require_clim: bool = False) -
             f"Fetch with: python -m geoarches.download.dl_era "
             f"--folder {ERA5_FULL_DIR} --clim --years"
         )
-    for path in (EVAL_ROOT, FORECAST_DIR, THRESHOLD_PATH.parent):
+    for path in (EVAL_ROOT, ENSEMBLE_DIR, THRESHOLD_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -113,12 +124,11 @@ FALLBACK_VAR = "temperature"
 FALLBACK_VAR_SHORT = "T850"
 FALLBACK_LEVEL = 850
 
-# TODO(lucas): [Thu] Resolve the variable name for real. Run
-# `python scripts/00_inspect_data.py` and check (a) which surface variables the
-# archesweathergen output actually carries and (b) what the climatology file
-# calls them. If 2m_temperature is absent from model output, switch to
-# FALLBACK_VAR/T850 here and nowhere else. Do not spread the fallback logic
-# into thresholds.py or 01_generate.py.
+# RESOLVED 2026-08-27: 2m_temperature is present in ERA5, in the
+# era5-quantiles stats file, and in the model's surface output at index
+# TARGET_SURFACE_INDEX below. The T850 fallback is not needed and is kept only
+# as dead config in case the variable choice is revisited.
+TARGET_SURFACE_INDEX = 2  # geoarches.dataloaders.era5.surface_variables order
 
 # --------------------------------------------------------------------------
 # Experiment constants (fixed a priori -- do not tune these on results)
@@ -138,28 +148,60 @@ LEAD_TIME_HOURS = 24  # model step size; 5 autoregressive iterations to reach da
 ROLLOUT_ITERATIONS = LEAD_DAYS * 24 // LEAD_TIME_HOURS
 N_MEMBERS = 20
 
-# Initialisations: daily 0Z over 2020-2021. NOT 2023 -- the upstream WeatherBench2
-# ERA5 source used here ends in 2021.
+# Initialisations: daily 0Z. LOCKED 2026-08-27.
+#   2020 = pure calibration: fed to the ACI update, never reported.
+#   2021 = verification: the evaluation window in the paper.
+# INIT_START is 2020-01-02 because the model needs the previous state (init - 24h)
+# and ERA5 begins at 2020-01-01T00. INIT_END is 2021-12-26 because that is the
+# last init whose +5 day valid time (2021-12-31T00) has ERA5 truth: the
+# WeatherBench2 1.5 deg archive ends at 2021-12-31T18 and there is no 2022/2023.
 INIT_HOUR = 0
-INIT_START = np.datetime64("2020-01-01T00")
-INIT_END = np.datetime64("2021-12-31T00")  # inclusive
+INIT_START = np.datetime64("2020-01-02T00")
+INIT_END = np.datetime64("2021-12-26T00")  # inclusive
+CALIBRATION_YEAR = 2020
+VERIFICATION_YEAR = 2021
+
+# Members sampled per denoising pass. Set from scripts/02_benchmark.py.
+# Pin it: geoarches draws a batch's initial noise from one generator in a
+# single stream, so a member's noise depends on how many members shared its
+# pass. Changing this changes the ensemble, and a resumed run must use the
+# same value to stay bit-identical.
+SAMPLING_BATCH_SIZE = 1
+
+# Init spacing in days, per year. Set to >1 to thin an under-budget run.
+# LOCKED: 2021 is never thinned -- it is the reported window.
+INIT_STRIDE_CALIBRATION = 1
+INIT_STRIDE_VERIFICATION = 1
+
+# Leads archived per init, in days. We verify at LEAD_DAYS but store all of
+# 1..5 so lead-dependence can be shown without regenerating.
+ARCHIVED_LEADS = (1, 2, 3, 4, 5)
 
 # ACI feedback delay, in units of init steps. Inits are daily and the lead is
 # LEAD_DAYS, so the outcome of the forecast issued at t is only observable at
 # t + LEAD_DAYS.
 TAU = LEAD_DAYS
 
-# Burn-in: the first ~2 months of 2020 are excluded from the reported coverage
-# but ARE fed to the ACI update, so c_t has settled before evaluation starts.
-EVAL_START = np.datetime64("2020-03-01T00")
+# All of 2020 is calibration: fed to the ACI update, excluded from every
+# reported number. Evaluation starts with the first 2021 init.
+EVAL_START = np.datetime64("2021-01-01T00")
 
 # --------------------------------------------------------------------------
 # Extremes and binning
 # --------------------------------------------------------------------------
 
 # Climatological exceedance threshold: per-gridpoint, per-dayofyear 95th
-# percentile of the target variable, from the WB2 1990-2019 climatology.
+# percentile of the target variable, computed from ERA5 1990-2019 at the
+# verification hour only.
 CLIM_PERCENTILE = 95.0
+CLIM_YEARS = (1990, 2019)  # inclusive
+CLIM_HOUR = 0  # must equal the valid hour being verified: t2m has a strong
+               # diurnal cycle, so pooling synoptic hours would sample a
+               # mixture distribution, not a bigger sample of the same one.
+CLIM_WINDOW_DAYS = 15  # +/- this many days around each dayofyear.
+                       # 30 years x 31 days = 930 samples per gridpoint per
+                       # dayofyear. Sample size comes from the day window and
+                       # the years, never from mixing hours.
 
 # Bins on p_t = fraction of ensemble members above the climatological threshold.
 # Fixed a priori. Half-open [lo, hi) except the last bin, which is closed.
@@ -177,13 +219,19 @@ def p_bin_labels(edges: tuple[float, ...] = P_BIN_EDGES) -> list[str]:
 # ACI adaptation space
 # --------------------------------------------------------------------------
 
-# UNDECIDED. Both are implemented behind one interface in aci.py.
-#   "variable"  -- pad the interval endpoints by +/- c, in Kelvin.
-#   "quantile"  -- shift the effective quantile level to alpha - c and re-read
-#                  the empirical ensemble quantiles at that level.
+# LOCKED 2026-08-27: variable space, standardized.
 #
-# TODO(lucas): [Fri] Decide the adaptation space. Run 03_verify.py both ways
-# (--space variable / --space quantile) and pick on the burn-in period only,
-# never on the reported evaluation window. Then set this default and say in the
-# paper which one was used and that the choice was made pre-evaluation.
+# The correction c is dimensionless and is applied as
+#     lower = q05 - c * s,   upper = q95 + c * s
+# where s is the per-gridpoint standard deviation of the 2020 0Z t2m series
+# (cached at ACI_SCALE_PATH, built from the calibration year only so the
+# verification year never informs the scaling). Standardizing means one eta
+# works everywhere: without it a single learning rate is far too slow in the
+# tropics, where the day-to-day t2m spread is a fraction of the mid-latitude
+# spread, and c would still be climbing when the record ends.
+#
+# Quantile space stays available behind --space quantile for the appendix. It
+# saturates once alpha - c leaves [0, 1] -- the interval is then already
+# [min, max] and cannot widen -- and AciResult.saturated_frac must report it.
 ACI_SPACE = "variable"
+ACI_STANDARDIZE = True
