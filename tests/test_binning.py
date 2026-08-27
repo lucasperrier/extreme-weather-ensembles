@@ -13,11 +13,6 @@ import pytest
 
 from xconformal import binning, config
 
-pending = pytest.mark.xfail(
-    raises=NotImplementedError,
-    strict=False,
-    reason="TODO(lucas): [Thu] binning.py is a stub",
-)
 
 EDGES = config.P_BIN_EDGES
 
@@ -31,7 +26,6 @@ def test_bin_labels_match_edges():
     assert labels[-2].endswith(")"), "every other bin is half-open"
 
 
-@pending
 def test_masks_partition_the_data():
     rng = np.random.default_rng(0)
     p = rng.random((37, 11))
@@ -46,7 +40,6 @@ def test_masks_partition_the_data():
         assert mask.dtype == bool
 
 
-@pending
 def test_edge_cases_p_zero_and_p_one():
     p = np.array([0.0, 1.0])
     idx = binning.bin_index(p, EDGES)
@@ -58,7 +51,6 @@ def test_edge_cases_p_zero_and_p_one():
     assert masks[-1][1] and not masks[0][1]
 
 
-@pending
 def test_interior_edges_are_left_closed():
     """A value exactly on an interior edge goes to the bin it opens."""
     for i, edge in enumerate(EDGES[1:-1], start=1):
@@ -66,14 +58,12 @@ def test_interior_edges_are_left_closed():
         assert idx[0] == i, f"p == {edge} should open bin {i}, got {idx[0]}"
 
 
-@pending
 def test_out_of_range_probability_raises():
     for bad in (-0.01, 1.01, np.nan):
         with pytest.raises((ValueError, AssertionError)):
             binning.bin_index(np.array([bad]), EDGES)
 
 
-@pending
 def test_bin_counts_sum_to_size():
     rng = np.random.default_rng(1)
     p = rng.random(1000)
@@ -82,7 +72,6 @@ def test_bin_counts_sum_to_size():
     assert counts.sum() == p.size
 
 
-@pending
 def test_exceedance_probability_is_a_member_fraction():
     # 4 members, one gridpoint: exactly one member above the threshold.
     ensemble = np.array([[0.0], [1.0], [2.0], [3.0]])
@@ -96,7 +85,6 @@ def test_exceedance_probability_is_a_member_fraction():
     assert binning.exceedance_probability(ensemble, np.array([-1.0]))[0] == pytest.approx(1.0)
 
 
-@pending
 def test_exceedance_probability_over_a_time_axis():
     rng = np.random.default_rng(2)
     ensembles = rng.normal(size=(7, 20, 3, 4))       # (time, member, lat, lon)

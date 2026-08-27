@@ -20,34 +20,35 @@ __all__ = [
 ]
 
 
-def covered(y_true: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
+def covered(y_true, lower, upper) -> np.ndarray:
     """Indicator that the outcome fell inside the interval.
 
     in: y_true, lower, upper, all broadcastable to a common shape;
     out: bool array, True where ``lower <= y_true <= upper`` (closed interval).
 
-    This is the complement of the ``err`` that ACI updates on; keeping one
-    definition means the verification and the controller cannot disagree about
-    what a miss is.
+    This is the complement of the ``err`` that ACI updates on; one definition
+    means the verification and the controller cannot disagree about a miss.
     """
-    raise NotImplementedError(
-        "in: y_true, lower, upper (broadcastable); out: bool array, lower <= y <= upper"
-    )
+    y_true = np.asarray(y_true)
+    return (y_true >= np.asarray(lower)) & (y_true <= np.asarray(upper))
 
 
-def miscoverage(y_true: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
+def miscoverage(y_true, lower, upper) -> np.ndarray:
     """``err`` indicator: 1.0 where the outcome fell outside the interval."""
-    raise NotImplementedError(
-        "in: y_true, lower, upper (broadcastable); out: float array, 1.0 outside the interval"
-    )
+    return 1.0 - covered(y_true, lower, upper).astype(float)
 
 
 def marginal_coverage(is_covered: np.ndarray) -> tuple[float, int]:
     """Overall empirical coverage.
 
-    in: bool array (any shape); out: (rate, count). rate is NaN if count == 0.
+    in: bool array (any shape); out: (rate, count). rate is NaN if count == 0 --
+    never 0.0, which would read as total miscoverage.
     """
-    raise NotImplementedError("in: bool array; out: (coverage_rate float, n int)")
+    is_covered = np.asarray(is_covered)
+    count = int(is_covered.size)
+    if count == 0:
+        return float("nan"), 0
+    return float(is_covered.mean()), count
 
 
 def per_bin_coverage(
@@ -59,30 +60,53 @@ def per_bin_coverage(
     out: (rates (n_bins,) float, counts (n_bins,) int).
 
     An empty bin yields rate NaN and count 0 -- never 0.0 coverage, which would
-    read as catastrophic miscoverage on the figure. Counts must sum to
-    ``is_covered.size`` when the masks partition the data.
+    plot as catastrophic miscoverage. Counts sum to ``is_covered.size`` when the
+    masks partition the data.
     """
-    raise NotImplementedError(
-        "in: is_covered bool array, masks list of bool arrays; "
-        "out: (rates (n_bins,) with NaN for empty bins, counts (n_bins,) int)"
-    )
+    is_covered = np.asarray(is_covered)
+    rates = np.empty(len(masks), dtype=float)
+    counts = np.empty(len(masks), dtype=int)
+    for i, mask in enumerate(masks):
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != is_covered.shape:
+            raise ValueError(
+                f"mask {i} has shape {mask.shape}, expected {is_covered.shape}"
+            )
+        n = int(mask.sum())
+        counts[i] = n
+        rates[i] = float(is_covered[mask].mean()) if n else float("nan")
+    return rates, counts
 
 
 def coverage_table(
     results: dict[str, np.ndarray],
     masks: list[np.ndarray],
     labels: list[str] | None = None,
-) -> "object":
+    edges: tuple[float, ...] = config.P_BIN_EDGES,
+):
     """Assemble per-bin coverage for several methods into one tidy table.
 
-    in: results mapping method name ("raw", "aci") -> bool covered array;
-        masks from binning.bin_masks; labels from config.p_bin_labels().
-    out: a pandas DataFrame with columns
-        ``method, bin_label, bin_lo, bin_hi, coverage, count, target``
-        ready to write to config.COVERAGE_TABLE_PATH and to be read straight
-        back by scripts/04_figure.py.
+    in: results mapping method name ("raw", "aci-variable") -> bool covered
+        array; masks from binning.bin_masks; labels from config.p_bin_labels().
+    out: pandas DataFrame with columns
+        ``method, bin_label, bin_lo, bin_hi, coverage, count, target``,
+        ready to write to config.COVERAGE_TABLE_PATH and read straight back by
+        scripts/04_figure.py.
     """
-    raise NotImplementedError(
-        "in: results {method: covered bool array}, masks, labels; "
-        "out: tidy DataFrame [method, bin_label, bin_lo, bin_hi, coverage, count, target]"
-    )
+    import pandas as pd
+
+    labels = labels if labels is not None else config.p_bin_labels(edges)
+    rows = []
+    for method, is_covered in results.items():
+        rates, counts = per_bin_coverage(is_covered, masks)
+        for i, (label, rate, count) in enumerate(zip(labels, rates, counts)):
+            rows.append({
+                "method": method,
+                "bin_label": label,
+                "bin_lo": float(edges[i]),
+                "bin_hi": float(edges[i + 1]),
+                "coverage": rate,
+                "count": int(count),
+                "target": config.TARGET_COVERAGE,
+            })
+    return pd.DataFrame(rows)

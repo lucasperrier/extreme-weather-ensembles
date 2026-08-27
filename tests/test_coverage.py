@@ -11,14 +11,8 @@ import pytest
 
 from xconformal import binning, config, coverage
 
-pending = pytest.mark.xfail(
-    raises=NotImplementedError,
-    strict=False,
-    reason="TODO(lucas): [Thu] coverage.py is a stub",
-)
 
 
-@pending
 def test_covered_is_a_closed_interval():
     y = np.array([0.0, 1.0, 2.0, 3.0])
     lower = np.array([1.0, 1.0, 1.0, 1.0])
@@ -28,7 +22,6 @@ def test_covered_is_a_closed_interval():
     )
 
 
-@pending
 def test_miscoverage_is_the_complement_of_covered():
     rng = np.random.default_rng(0)
     y = rng.normal(size=500)
@@ -40,7 +33,6 @@ def test_miscoverage_is_the_complement_of_covered():
     # controller is optimising a different quantity than the one we report.
 
 
-@pending
 def test_marginal_coverage_rate_and_count():
     is_covered = np.array([True, True, True, False])
     rate, count = coverage.marginal_coverage(is_covered)
@@ -48,14 +40,12 @@ def test_marginal_coverage_rate_and_count():
     assert count == 4
 
 
-@pending
 def test_marginal_coverage_of_nothing_is_nan_not_zero():
     rate, count = coverage.marginal_coverage(np.zeros(0, dtype=bool))
     assert count == 0
     assert np.isnan(rate)
 
 
-@pending
 def test_per_bin_counts_sum_to_total():
     rng = np.random.default_rng(1)
     p = rng.random(2000)
@@ -72,7 +62,6 @@ def test_per_bin_counts_sum_to_total():
     assert np.average(rates[finite], weights=counts[finite]) == pytest.approx(marginal)
 
 
-@pending
 def test_empty_bin_is_nan_with_zero_count():
     # All mass in the first bin, so every other bin is empty.
     p = np.full(100, 0.05)
@@ -88,7 +77,6 @@ def test_empty_bin_is_nan_with_zero_count():
     )
 
 
-@pending
 def test_coverage_table_shape_and_columns():
     rng = np.random.default_rng(2)
     p = rng.random(500)
