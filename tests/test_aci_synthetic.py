@@ -247,11 +247,10 @@ def test_quantile_space_reports_saturation_on_an_underdispersed_stream():
     on the same stream. The controller must therefore REPORT that it saturated
     rather than silently returning a number that looks like a coverage result.
 
-    TODO(lucas): [Fri] This is the deciding evidence for config.ACI_SPACE.
-    Confirm it holds on the real ensemble before writing it into the paper --
-    on real data the ensemble is less pathologically under-dispersed than
-    sigma=0.5, so quantile space may saturate only in the high-p_t bins, which
-    would itself be a result worth reporting.
+    This was the deciding evidence for config.ACI_SPACE, which is now locked to
+    standardized variable space. The test remains as the contract that
+    saturation is REPORTED rather than hidden, since quantile space is still
+    reachable via `03_verify.py --space quantile` for the appendix.
     """
     ensembles, truths = synthetic_stream(sigmas=(0.5,))
     controller = aci.DelayedACI(

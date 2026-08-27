@@ -17,16 +17,23 @@ Two things make this module non-trivial and both are deliberate:
     controller; there are no Python loops over gridpoints. The only Python
     loop is over time, which is inherently sequential.
 
-2.  **Adaptation space is pluggable.** See :class:`Adapter` below.
+2.  **Adaptation space is pluggable.** DECIDED 2026-08-27: the paper uses
+    STANDARDIZED VARIABLE SPACE (config.ACI_SPACE == "variable",
+    config.ACI_STANDARDIZE). The correction is applied as
 
-    TODO(lucas): [Fri] ==== ADAPTATION SPACE IS UNDECIDED ====
-    Both VariableSpaceAdapter and QuantileSpaceAdapter implement the same
-    interface and are drop-in interchangeable via config.ACI_SPACE. They are
-    NOT equivalent: variable-space padding is unbounded and has units of
-    Kelvin, quantile-space adaptation saturates once alpha - c leaves [0, 1]
-    and so cannot widen an interval past the ensemble min/max. That saturation
-    is exactly what may bite in the high-p_t bins, which is the paper's point,
-    so run both before committing. Decide on the burn-in window only.
+        lower = q05 - c * s,   upper = q95 + c * s
+
+    with s the per-gridpoint std of the 2020 0Z t2m series
+    (thresholds.load_aci_scale, built from the calibration year only so the
+    verification year never informs the scaling). s spans 0.46-23.44 K across
+    the grid, so without it a single eta is ~50x too slow in the tropics and c
+    would still be climbing when the record ends.
+
+    QuantileSpaceAdapter stays behind `--space quantile` for the appendix. The
+    two are NOT equivalent: variable-space padding is unbounded, whereas
+    quantile-space adaptation saturates once alpha - c leaves [0, 1] and cannot
+    widen an interval past the ensemble min/max. AciResult.saturated_frac must
+    report that saturation.
 """
 
 from __future__ import annotations
@@ -79,19 +86,26 @@ class Adapter:
 
 @dataclass
 class VariableSpaceAdapter(Adapter):
-    """Pad the nominal ensemble quantiles by +/- c, in the units of the variable.
+    """Pad the nominal ensemble quantiles by +/- c*scale, in variable units.
 
-    lower = quantile(ensemble, lower_q) - c
-    upper = quantile(ensemble, upper_q) + c
+    lower = quantile(ensemble, lower_q) - c * scale
+    upper = quantile(ensemble, upper_q) + c * scale
+
+    ``scale`` is the per-gridpoint standardization field -- in production,
+    thresholds.load_aci_scale(), the 2020 0Z t2m std. It makes c dimensionless
+    so one eta works everywhere. None means 1.0 (raw Kelvin), which is what the
+    synthetic tests use since their stream is already unit-variance.
     """
 
     lower_q: float = config.LOWER_QUANTILE
     upper_q: float = config.UPPER_QUANTILE
+    scale: np.ndarray | float | None = None
 
     def interval(self, ensemble: np.ndarray, c: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         raise NotImplementedError(
             "in: ensemble (n_members, *grid), c (*grid); out: "
-            "(np.quantile(ens, lower_q, axis=0) - c, np.quantile(ens, upper_q, axis=0) + c)"
+            "(quantile(ens, lower_q, axis=0) - c*s, quantile(ens, upper_q, axis=0) + c*s) "
+            "with s = self.scale or 1.0"
         )
 
 

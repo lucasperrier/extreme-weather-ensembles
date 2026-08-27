@@ -56,10 +56,11 @@ def load_truth(valid_times: np.ndarray) -> xr.DataArray:
     in: valid_times (n_time,) datetime64; out: DataArray (time, lat, lon) of
     the resolved target variable, aligned to valid_times in order.
 
-    TODO(lucas): [Fri] The 2020 ERA5 download may still be in flight and 2022
-    files may exist with time=0. Open files individually and drop any with an
-    empty time dimension BEFORE concatenating -- see scripts/00_inspect_data.py,
-    which flags exactly these.
+    As of 2026-08-27 the 2020 and 2021 files are complete (366 and 365
+    timesteps at each synoptic hour) and there are no 2022 files. Still open
+    files individually and drop any with an empty time dimension before
+    concatenating: an empty time dim vanishes silently in xr.concat rather than
+    raising, which would shift every downstream index.
     """
     raise NotImplementedError(
         "in: valid_times (n_time,); out: DataArray (time, lat, lon) aligned to valid_times"
