@@ -203,7 +203,10 @@ produce a reported number.
 
 | month | Jan | Feb | Mar | Apr | May | Jun | Jul | Aug | Sep | Oct | Nov | Dec |
 |:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| delta | −0.0078 | −0.0059 | −0.0042 | −0.0026 | −0.0018 | −0.0016 | −0.0010 | −0.0008 | −0.0006 | −0.0006 | −0.0003 | −0.0002 |
+| delta | −0.0078 | −0.0059 | −0.0042 | −0.0026 | −0.0018 | −0.0016 | −0.0010 | −0.0008 | −0.0006 | −0.0005 | −0.0003 | −0.0002 |
+
+(Deltas are differences of the full-precision monthly rates, not of the
+4-decimal values displayed in the rows above; October is −0.00054.)
 
 The lag decays at the measured ACI time constant of **83 inits** (~2.8 months)
 at `eta = 0.01`, from a starting offset of ~0.009 in `c`. Cycling 2020 removed
