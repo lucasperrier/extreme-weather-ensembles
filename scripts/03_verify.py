@@ -21,6 +21,10 @@ Outputs (paths from config, all under $EVAL_ROOT):
     coverage_marginal.csv     per method: marginal coverage
     marginal_timeseries.csv   per init: marginal coverage of each method
     c_trajectories.csv        c_t at six named gridpoints
+    coverage_monthly.csv      per calendar month: marginal coverage (transient check)
+    coverage_by_bin_surface.csv   per bin, split land vs ocean
+    interval_width_by_bin.csv per bin: mean interval width, raw vs ACI
+    aci_worse_than_raw.csv    bins/scopes where ACI covers less often than raw
 """
 
 from __future__ import annotations
@@ -115,6 +119,36 @@ def load_truth(valid_times: np.ndarray) -> np.ndarray:
         raise KeyError(f"{len(missing)} valid times have no ERA5 truth, first {missing[0]}")
     out = truth.sel(time=valid_times).transpose("time", "latitude", "longitude")
     return out.values.astype("float32")
+
+
+def load_land_mask(threshold: float = 0.5) -> np.ndarray:
+    """Static ERA5 land-sea mask on the canonical (latitude, longitude) grid.
+
+    in: land fraction cutoff; out: bool (lat, lon), True over land.
+
+    The ERA5 netcdfs store this field as (longitude, latitude) -- the same
+    convention mismatch documented for the WeatherBench2 zarr -- so it is
+    transposed here rather than trusted. It is time-invariant; the first
+    timestep is taken if a time dimension is present.
+    """
+    path = config.era5_file(config.VERIFICATION_YEAR, config.INIT_HOUR)
+    with xr.open_dataset(path, decode_timedelta=False) as ds:
+        if "land_sea_mask" not in ds.data_vars:
+            raise KeyError(f"no land_sea_mask in {path}")
+        lsm = ds["land_sea_mask"]
+        if "time" in lsm.dims:
+            lsm = lsm.isel(time=0)
+        values = lsm.transpose("latitude", "longitude").values.astype("float32")
+    return values >= threshold
+
+
+def weighted_mean(values: np.ndarray, mask: np.ndarray, weights: np.ndarray) -> float:
+    """Area-weighted mean of ``values`` over ``mask``; NaN on an empty mask."""
+    if not mask.any():
+        return float("nan")
+    w = np.broadcast_to(weights, values.shape)[mask]
+    total = float(w.sum())
+    return float((values[mask] * w).sum() / total) if total else float("nan")
 
 
 def probe_indices(latitudes: np.ndarray, longitudes: np.ndarray) -> dict:
@@ -249,6 +283,37 @@ def main(argv: list[str] | None = None) -> int:
                               "warm_start_passes": n_passes})
         print(f"  {name:<18s} {rate:.4f}  (unweighted {unweighted:.4f}, n={count:,})")
 
+    # ---- (1b) monthly marginal -- the transient check --------------------
+    # After a converged warm start there is nothing left to relax, so January
+    # and February must sit inside the spread of the other ten months. If they
+    # do not, the warm start did not converge and the number is not a
+    # transient to be waited out.
+    print("\n--- (1b) monthly marginal coverage, area-weighted ---")
+    months = eval_times.astype("datetime64[M]").astype(int) % 12 + 1
+    month_rows = []
+    print(f"  {'month':<8s} {'n_inits':>8s} {'raw':>9s} {'aci':>9s}")
+    for m in range(1, 13):
+        sel = months == m
+        if not sel.any():
+            continue
+        row = {"month": int(m), "n_inits": int(sel.sum())}
+        for name, is_covered in covered.items():
+            row[name], _ = coverage.marginal_coverage(is_covered[sel],
+                                                      weights=weights)
+        month_rows.append(row)
+        print(f"  {m:<8d} {row['n_inits']:>8d} {row['raw']:>9.4f} "
+              f"{row[method]:>9.4f}")
+    month_frame = pd.DataFrame(month_rows)
+    aci_monthly = month_frame[method].to_numpy()
+    winter = aci_monthly[:2]
+    rest = aci_monthly[2:]
+    print(f"  Jan-Feb ACI  : {winter.min():.4f} .. {winter.max():.4f}")
+    print(f"  Mar-Dec ACI  : {rest.min():.4f} .. {rest.max():.4f} "
+          f"(mean {rest.mean():.4f}, sd {rest.std(ddof=1):.4f})")
+    inside = bool(((winter >= rest.min()) & (winter <= rest.max())).all())
+    print(f"  CHECK 2 (Jan-Feb within the Mar-Dec spread): "
+          f"{'PASS' if inside else 'FAIL'}")
+
     # ---- (2) c_t transient ----------------------------------------------
     print("\n--- (2) c_t at the evaluation boundary ---")
     probes = probe_indices(latitudes, longitudes)
@@ -336,6 +401,84 @@ def main(argv: list[str] | None = None) -> int:
     table = coverage.coverage_table(covered, masks, labels, weights=weights)
     print(table.to_string(index=False))
 
+    # ---- (4) per-bin, split by land vs ocean ----------------------------
+    # One split and one only. The surface type changes both the ensemble's
+    # dispersion and the standardization scale, so it is the split most likely
+    # to hide a per-bin failure inside a marginal success.
+    print("\n--- (4) per-bin coverage by surface, area-weighted ---")
+    land = load_land_mask()
+    land_frac_w = weighted_mean(land.astype(float),
+                                np.ones_like(land, dtype=bool), weights[0])
+    print(f"  land fraction (area-weighted) {land_frac_w:.4f}")
+    surface_masks = {"land": np.broadcast_to(land, p[keep].shape),
+                     "ocean": np.broadcast_to(~land, p[keep].shape)}
+    surface_rows = []
+    for surface, smask in surface_masks.items():
+        sub_masks = [m & smask for m in masks]
+        sub_table = coverage.coverage_table(covered, sub_masks, labels, weights=weights)
+        sub_table.insert(0, "surface", surface)
+        surface_rows.append(sub_table)
+    surface_table = pd.concat(surface_rows, ignore_index=True)
+    print(surface_table.to_string(index=False))
+
+    # ---- (5) mean interval width per bin --------------------------------
+    # What the correction cost. Widths are area-weighted like the coverages,
+    # so the two tables are comparable row for row.
+    print("\n--- (5) mean interval width per bin, K, area-weighted ---")
+    widths = {"raw": raw_hi - raw_lo, method: result.upper - result.lower}
+    width_rows = []
+    for i, (label, mask) in enumerate(zip(labels, masks)):
+        row = {"bin_label": label, "bin_lo": float(config.P_BIN_EDGES[i]),
+               "bin_hi": float(config.P_BIN_EDGES[i + 1]), "count": int(mask.sum())}
+        for name, w_field in widths.items():
+            row[f"width_{name}"] = weighted_mean(w_field, mask, weights)
+        row["width_ratio"] = row[f"width_{method}"] / row["width_raw"]
+        row["width_added_K"] = row[f"width_{method}"] - row["width_raw"]
+        width_rows.append(row)
+    width_table = pd.DataFrame(width_rows)
+    print(width_table.to_string(index=False))
+
+    # ---- (6) the secondary readout: where ACI is WORSE than raw ----------
+    # Reported even when empty. ACI widens on average, so a bin where the
+    # corrected interval covers less often than the uncorrected one is either a
+    # real conditional failure or a bug, and either way it must not go unlooked-at.
+    print("\n--- (6) bins/regions where ACI coverage < raw coverage ---")
+    worse_rows = []
+    scopes = [("all", np.ones_like(land, dtype=bool)),
+              ("land", land), ("ocean", ~land)]
+    for scope, spatial in scopes:
+        smask = np.broadcast_to(spatial, p[keep].shape)
+        sub_masks = [m & smask for m in masks]
+        raw_rates, counts = coverage.per_bin_coverage(covered["raw"], sub_masks,
+                                                      weights=weights)
+        aci_rates, _ = coverage.per_bin_coverage(covered[method], sub_masks,
+                                                 weights=weights)
+        for label, r, a, n in zip(labels, raw_rates, aci_rates, counts):
+            if np.isfinite(r) and np.isfinite(a) and a < r:
+                worse_rows.append({"scope": scope, "bin_label": label, "count": int(n),
+                                   "raw": float(r), method: float(a),
+                                   "delta": float(a - r)})
+    if worse_rows:
+        worse_table = pd.DataFrame(worse_rows)
+        print(worse_table.to_string(index=False))
+    else:
+        worse_table = pd.DataFrame(columns=["scope", "bin_label", "count", "raw",
+                                            method, "delta"])
+        print("  none -- ACI coverage >= raw coverage in every bin, on land and ocean")
+
+    # ---- (7) final c_t summary ------------------------------------------
+    print("\n--- (7) c at the end of the evaluation year ---")
+    c_final = result.c_history[-1]
+    n_nan = int((~np.isfinite(result.c_history)).sum())
+    print(f"  non-finite entries in the whole c_t trace: {n_nan}")
+    print(f"  final c   min {c_final.min():+.4f}  median {np.median(c_final):+.4f}  "
+          f"max {c_final.max():+.4f}")
+    for name, (i, j, lat, lon) in probes.items():
+        series = result.c_history[:, i, j]
+        print(f"  {name:<14s} min {series.min():+.4f}  median {np.median(series):+.4f}  "
+              f"max {series.max():+.4f}  final {series[-1]:+.4f}  "
+              f"net drift {series[-1] - series[0]:+.4f}")
+
     # ---- per-init marginal time series ----------------------------------
     ts_rows = []
     for t, init in enumerate(eval_times):
@@ -355,6 +498,10 @@ def main(argv: list[str] | None = None) -> int:
         config.COVERAGE_TABLE_PATH.with_stem(config.COVERAGE_TABLE_PATH.stem + sfx): table,
         config.EVAL_ROOT / f"marginal_timeseries{sfx}.csv": pd.DataFrame(ts_rows),
         config.EVAL_ROOT / f"c_trajectories{sfx}.csv": c_frame,
+        config.EVAL_ROOT / f"coverage_monthly{sfx}.csv": month_frame,
+        config.EVAL_ROOT / f"coverage_by_bin_surface{sfx}.csv": surface_table,
+        config.EVAL_ROOT / f"interval_width_by_bin{sfx}.csv": width_table,
+        config.EVAL_ROOT / f"aci_worse_than_raw{sfx}.csv": worse_table,
     }
     for path, frame in out.items():
         frame.to_csv(path, index=False)

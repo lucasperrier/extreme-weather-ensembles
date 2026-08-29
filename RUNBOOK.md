@@ -154,6 +154,33 @@ debris from a killed run.
   directory.** From `$PROJECT_ROOT` that is the wrong place. Always pass the
   absolute `config.GEN_MODEL_DIR`.
 
+- **ERA5's `land_sea_mask` is stored `(longitude, latitude)`.** Same
+  convention mismatch as the WeatherBench2 zarr, but inside the ERA5 netcdfs we
+  read for truth -- and unlike the 3-D fields, `t2m` is explicitly transposed by
+  `load_truth` while a naively-read mask is not. `03_verify.load_land_mask`
+  transposes to the canonical order. A silently transposed mask would swap land
+  for ocean over most of the grid and still produce two plausible-looking
+  columns.
+
+- **A converged warm start does NOT mean a converged evaluation year.**
+  `aci.warm_start` cycles the calibration year to *the calibration year's*
+  equilibrium. Measured 2026-08-29: the per-gridpoint equilibrium padding is
+  0.1307 on 2020 against 0.1397 on 2021 (area-weighted), and the two fields
+  correlate only 0.75 across the grid. The controller therefore opens the
+  evaluation year ~0.009 low in c and spends ~83 inits (about 2.8 months)
+  climbing, which costs January 0.008 of coverage and February 0.006. This is
+  structural -- no amount of calibration-year data can remove it, because the
+  calibration year does not know what the verification year needs. Do not read
+  a low January as a warm-start bug; check it against a frozen-field control
+  first (controller off, c pinned at the handed-over field), which isolates the
+  data from the dynamics.
+
+- **`warm_start`'s `tol` is a relative change in the pass-mean of c, and the
+  approach is monotone and geometric**, so stopping at `tol = 0.01` stops about
+  1% short of the true fixed point (+0.12330 against +0.12544 at 60 passes).
+  Immaterial to the reported coverages, but do not describe the shipped default
+  as "the fixed point" in the paper.
+
 - **`Era5Forecast` silently overrides your time bounds** when constructed with
   `domain="val"` or `"test"` — it re-selects a single hard-coded year. Use an
   explicit `filename_filter` plus `set_timestamp_bounds` instead.
@@ -183,4 +210,29 @@ methods section can be written from this file rather than from memory.
 
 **Open — must be closed before the paper:**
 
-- [ ] Nothing blocking. Remaining TODOs: figure-form sign-off (Sat).
+- [ ] **CHECK 2 (Jan-Feb ACI coverage) fails and is escalated to Lucas**
+      (2026-08-29). Not a bug — diagnosed to the calibration/verification
+      equilibrium mismatch above, with four controls in `LOG.md`. Phase 3
+      results and the figure are held until the response is chosen. Options on
+      the table: disclose as-is; report Mar–Dec only (a post-hoc window, and it
+      must be labelled as one); revisit `eta`.
+- [ ] Figure-form sign-off, blocked on the above.
+
+---
+
+## Post-deadline
+
+Improvements noticed while the deadline was live and deliberately NOT made.
+
+- `01_generate.py` writes integer index coordinates rather than
+  `grid.model_latitudes()` / `model_longitudes()`, so the grid convention lives
+  in a docstring instead of on disk. The archive is correct and the read side
+  fixes it; make the next generation run write real coordinates.
+- `warm_start`'s convergence test should be on the fixed-point residual rather
+  than on the relative change in pass-mean c between consecutive passes. The
+  current rule is monotone-approach-blind and stops ~1% short.
+- `03_verify.py` recomputes the raw quantiles in several places (`raw_interval`,
+  the `c*` bisection, the width table). One cached pair would be cheaper and
+  would remove any chance of the three drifting apart.
+- The `--space quantile` appendix ablation has not been rerun on the full
+  archive; only the partial-archive number from 2026-08-28 exists.

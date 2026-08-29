@@ -241,3 +241,79 @@ observation, not an anomaly.
 (75.0, 90.0) Siberian Arctic · desert (25.5, 15.0) central Sahara.
 
 **pytest: 30 passed, 0 failed.**
+
+
+## 2026-08-29 (Sat) — final measurement: archive audit clean, CHECK 2 fails
+
+**Goal.** Audit the finished archive, warm-start on the full calibration year,
+and gate the paper's results on two coverage checks.
+
+**Phase 0 — archive audit. PASSED, every item.**
+
+| item | result |
+|---|---|
+| files on disk | 452, exactly the locked schedule (92 in 2020 at stride 4 from 01-02, 360 daily in 2021 to 12-26) |
+| missing / extra / duplicate dates | 0 / 0 / 0 |
+| init spacing | 2020 gaps == {4 d}, 2021 gaps == {1 d} — no cadence surprise |
+| open + `.load()` + M == 20 + lead 5 present | 452 / 452 |
+| finite, physical | 0 NaN/Inf anywhere; t2m 193.3–321.7 K over the whole archive |
+| day-5 member spread | 0.85–1.17 K, non-zero everywhere |
+| `grid.check_alignment`, 20 random files across both years | all pass, day-1 ens-mean RMSE 0.604–0.760 K (guard raises above 3 K) |
+| reproducibility | 2021-06-15 regenerated on the GPU: **bit-identical**, max abs diff 0.0, sha256 2691ffeeff18e398 both |
+| disk | archive 2.9 GB, `/workspace` 52 GB total, container disk 22% used — nowhere near a limit |
+
+New: `scripts/08_audit_archive.py` runs the whole thing and exits non-zero if
+any phase fails.
+
+**Phase 1 — warm start on all 92 calibration inits.** Converged in **8 passes**
+at the shipped `tol = 0.01`, pass-mean c **+0.12330**; queue empty at the
+2020→2021 boundary. Friday's 11-init preview gave +0.0838, so the full
+calibration year lands **+0.0395 higher** — Friday's value was winter-biased, as
+flagged. The 1% stopping rule stops slightly short of the true fixed point: 60
+passes with no early stop gives **+0.12544** (c_0 field mean, area-weighted,
++0.13550). The difference is immaterial to the checks — see below.
+
+**Phase 2 — CHECK 1 PASSED, CHECK 2 FAILED.**
+
+| check | number | verdict |
+|---|---|---|
+| marginal ACI coverage, area-weighted | **0.8971** | PASS, inside [0.885, 0.915] |
+| marginal raw coverage, area-weighted | 0.7409 (unweighted 0.7397) | reproduction number, ~0.045 below Asch's ~0.785/0.794 |
+| Jan–Feb vs the other months | Jan 0.8901, Feb 0.8906 vs Mar–Dec 0.8935–0.9057 | **FAIL** |
+
+**Diagnosis of CHECK 2 — not a bug, and not removable by the warm start.**
+Four controls, in order:
+
+1. *Warm start not converged?* No. Tightening `tol` to 1e-3, 1e-4 and running
+   60 passes with no early stop moves c_0 from +0.12330 to +0.12544 and lifts
+   every month by ~0.001. The gap is unchanged and the check still fails.
+2. *Is Jan–Feb 2021 intrinsically harder?* No. With c FROZEN at the exact field
+   the warm start hands over (controller off), Jan 0.8890 and Feb 0.8856 sit
+   comfortably inside the Mar–Dec range 0.8835–0.8979.
+3. *Does the calibration year want the same padding as the verification year?*
+   No. Per-gridpoint equilibrium padding (the 90th percentile of the
+   standardized required padding — static, no dynamics) is **0.13068** on 2020
+   against **0.13973** on 2021, area-weighted; the two fields correlate only
+   **0.747** across the grid.
+4. *Oracle starts.* Starting the evaluation run at the 2021 fixed-point field
+   gives Jan 0.8976 / Feb 0.8951 → PASS; cycling 2021 to its own equilibrium
+   gives Jan 0.8989 / Feb 0.8972 → PASS. The only thing that changes between
+   these and the paper's configuration is where c_0 came from.
+
+So the residual is the controller climbing from the **calibration** year's
+equilibrium to the **verification** year's, a gap of ~0.009 in c, at a time
+constant of 83 inits ≈ 2.8 months. Cycling 2020 removed the c = 0 → 2020
+transient (the Friday problem, 68% of the way); what is left is a smaller
+transient that no amount of calibration-year data can remove, because 2020 does
+not know what 2021 needs. Cost against the oracle: January **−0.0078**,
+February −0.0059, March −0.0042, June −0.0016, September −0.0006.
+
+**Decided.** Nothing. Escalated to Lucas per the standing rule — the response to
+a failed gate is his call, and every option (disclose as-is, shorten the
+reported window, revisit eta) changes what §3 and §4 claim.
+
+**STOPPED before Phase 3 and Phase 4.** The per-bin, land/ocean, width, c_t and
+worse-than-raw numbers all computed cleanly in the same run and are held
+pending the decision. No figure written, no RESULTS.md, nothing pushed.
+
+**Next.** Await the call on CHECK 2, then Phase 3 + 4 unchanged.
