@@ -317,3 +317,54 @@ worse-than-raw numbers all computed cleanly in the same run and are held
 pending the decision. No figure written, no RESULTS.md, nothing pushed.
 
 **Next.** Await the call on CHECK 2, then Phase 3 + 4 unchanged.
+
+
+### Sat, later — decision on CHECK 2, and release
+
+**Decided (Lucas).** Option 1: **report all 12 months.** The Jan-Feb residual is
+disclosed rather than windowed away, and is **reframed as a measurement** — the
+controller's adaptation lag under a real year-to-year shift in required padding
+(~0.009 in c, tracked at the 83-init time constant, cost decaying Jan −0.0078 to
+Sep −0.0006 against the oracle start). `eta` stays 0.01. No window shortened.
+The `tol` protocol is recorded exactly: 8 passes at tol 0.01, fixed point
+verified at +0.12544 over 60 passes.
+
+Paper allocation: one clause in §3 (warm-start protocol + residual), one short
+paragraph in limitations, one sentence in the outlook connecting the measured
+lag to the top-bin time constant via `1/w_k`.
+
+**Phase 3 — released.** Headline per-bin coverage, area-weighted, 2021 only:
+
+| p_t bin | n | raw | ACI |
+|---|---:|---:|---:|
+| [0, 0.1) | 8,885,421 | 0.7377 | 0.8950 |
+| [0.1, 0.5) | 1,082,162 | 0.7694 | 0.9105 |
+| [0.5, 0.9) | 348,395 | 0.7430 | 0.9062 |
+| [0.9, 1] | 138,422 | **0.6971** | **0.8961** |
+
+The land/ocean split sharpens it: the land top bin is the weakest cell in the
+table at **0.8809** ACI (raw 0.6612), against 0.9030 on ocean. Bins where ACI
+covers less often than raw: **none**, anywhere. Width cost 0.83–0.92 K
+(1.36x–1.56x), largest ratio in the top bin (1.564x) — it pays most where it
+helps least. `c_t` oscillates seasonally at all six probes with net drift ≤0.055
+over the year and no non-finite values; final c over the grid min −0.0110,
+median +0.1090, max +0.8690.
+
+**Appendix ablation ran (time permitted).** Quantile space on the full archive:
+**`saturated_frac` 95.61%**, marginal coverage stalls at **0.8444**, the warm
+start never converges (25-pass ceiling, pass-mean c +1.354) and c runs away to
+**+16.28** at the worst gridpoint. This is Thursday's synthetic prediction
+(0.634, clipped on 68% of steps) confirmed on real data, and it is the argument
+for variable space stated as a result rather than an assumption.
+
+**Phase 4.** Figure form signed off — paired dots, target rule, per-bin counts on
+the axes, hand-set ylim (0.63, 0.95) because autoscale collided the top bin's
+0.697 label with the count row. `DEFAULT_YLIM` now lives in `04_figure.py` so the
+figure is reproducible without remembering a flag. PDF + PNG + the exact CSV
+written side by side. `$EVAL_ROOT/RESULTS.md` written as the paper's source of
+truth, carrying the commit hash, the 452-file archive count, `c_0`, all Phase 2
+and Phase 3 tables, the four-control diagnosis, and the `1/w_k` arithmetic for
+the outlook.
+
+**Next.** Frozen. No code changes unless Lucas names a bug; improvements go to
+RUNBOOK "post-deadline".

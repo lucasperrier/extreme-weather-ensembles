@@ -206,17 +206,18 @@ methods section can be written from this file rather than from memory.
 | 2026-08-28 | **`err = 1` for an empty, crossed, or non-finite interval** (Asch's convention). | `covered()` is `lower <= y <= upper`, which is already False whenever `lower > upper` or anything is NaN, so the convention falls out with no special case — and a corrupt field counts as a miss rather than silently passing. |
 
 | 2026-08-28 | **`c_0` for the evaluation year is obtained by cycling the calibration year (2020) to equilibrium; the evaluation year never informs `c`.** Passes carry `c` but flush-and-clear the in-flight queue at each boundary, run over whole years, and stop when the pass-mean of `c` moves < 1%. **DISCLOSE IN §3 OF THE PAPER.** | ACI relaxes with a time constant of `1/(eta · dcoverage/dc)` ≈ **80 inits** at `eta = 0.01`. A single 92-init calibration pass reaches only ~68% of the equilibrium padding `c*`, so the evaluation year would open with the controller still climbing and its coverage biased low for months. Cycling removes the transient without touching `eta` and without leaking evaluation data into `c`. Whole-year passes matter: the final pass ends on late-December conditions, the correct seasonal phase for entering January. The queue must be cleared between passes or December verification times would all come due at the next pass's first January init, in the wrong order. |
+| 2026-08-29 | **Report all 12 months of the evaluation year; do not window out the Jan-Feb residual.** `eta` stays 0.01. The residual is reframed as a measurement: the controller's adaptation lag under a real year-to-year shift in required padding. | Four controls (`scripts/09_diagnose_transient.py`) rule out warm-start convergence, the data, and the handed-over field, and locate the cause in the calibration year's equilibrium padding being +0.00905 below the verification year's, with the two fields correlating only 0.747 across the grid. Windowing to Mar-Dec would be a post-hoc window chosen after seeing the result. Disclosing costs one paragraph; windowing costs credibility. |
+| 2026-08-29 | **Quantile space is reported as a failed ablation, not as an alternative.** | On the full archive it saturates on **95.61%** of (init, gridpoint) pairs, stalls at 0.8444 marginal coverage, never converges, and lets c run away to +16.28. Predicted on synthetic data 2026-08-27; now measured. |
 | 2026-08-28 | **The model grid is not the ERA5 grid.** `model = roll(flip(era5, lat), 120, lon)` — latitude descending, longitude on the −180…180 convention. `xconformal.grid` converts, and `grid.check_alignment` runs on every archive load. | Found by round-tripping the model's own input state, which is ERA5 at the init time, through denormalize+extract: it came back 12.7 K RMSE with min and max matching exactly, so a permutation. Every symptom was a *plausible* number — day-5 RMSE 12.9 K, mean `p_t` 0.35, raw coverage 0.11 — which is why the check is now automatic rather than trusted. |
 
 **Open — must be closed before the paper:**
 
-- [ ] **CHECK 2 (Jan-Feb ACI coverage) fails and is escalated to Lucas**
-      (2026-08-29). Not a bug — diagnosed to the calibration/verification
-      equilibrium mismatch above, with four controls in `LOG.md`. Phase 3
-      results and the figure are held until the response is chosen. Options on
-      the table: disclose as-is; report Mar–Dec only (a post-hoc window, and it
-      must be labelled as one); revisit `eta`.
-- [ ] Figure-form sign-off, blocked on the above.
+- [x] CHECK 2 resolved 2026-08-29: report all 12 months, disclose the residual,
+      reframe it as a measurement of the adaptation lag. See Decisions.
+- [x] Figure-form sign-off, 2026-08-29. Paired dots + target rule, per-bin counts
+      on the axes, `DEFAULT_YLIM = (0.63, 0.95)` in `04_figure.py`.
+- [ ] Nothing blocking. **The repo is frozen for the deadline** — no code changes
+      unless Lucas names a bug; improvements go to "post-deadline" below.
 
 ---
 

@@ -26,9 +26,10 @@ written showing c_t at the six probe gridpoints. Over a full year that should
 oscillate seasonally -- the controller tracking seasonal miscalibration -- which
 is a result rather than an artefact.
 
-TODO(lucas): [Sat] Sign off on the figure form before it goes in the paper, and
-set --ylim once the real numbers are in -- the default autoscale is fine for
-looking at results but a hand-set range is better for a printed figure.
+Signed off 2026-08-29 on the full-year numbers. DEFAULT_YLIM is hand-set rather
+than autoscaled: autoscale puts the [0.9, 1] bin's 0.697 label on top of the
+per-bin count row, and a fixed range keeps the figure comparable across
+reruns. It spans the target rule and every mark with room for both label rows.
 """
 
 from __future__ import annotations
@@ -52,6 +53,9 @@ from xconformal import config  # noqa: E402
 # order and never cycled. Ink and grid are text tokens, not series colors -- the
 # coverage numbers stay in ink so identity is carried by the marks beside them.
 SERIES_COLORS = ("#2a78d6", "#eb6834")  # blue = raw, orange = ACI
+
+# Hand-set y range for the printed figure; see the module docstring.
+DEFAULT_YLIM = (0.63, 0.95)
 INK_PRIMARY = "#0b0b0b"
 INK_SECONDARY = "#52514e"
 INK_MUTED = "#8a8a85"
@@ -208,8 +212,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--table", type=Path, default=config.COVERAGE_TABLE_PATH)
     parser.add_argument("--out", type=Path, default=config.FIGURE_PATH)
-    parser.add_argument("--ylim", type=float, nargs=2, default=None,
-                        metavar=("LO", "HI"))
+    parser.add_argument("--ylim", type=float, nargs=2, default=DEFAULT_YLIM,
+                        metavar=("LO", "HI"),
+                        help="y range; pass 0 0 to autoscale instead")
     parser.add_argument("--c-table", type=Path, default=None,
                         help="c_trajectories CSV; inferred from --table if omitted")
     parser.add_argument("--label", default="",
@@ -221,7 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     style()
     table = load_table(args.table)
-    fig = draw(table, ylim=tuple(args.ylim) if args.ylim else None)
+    ylim = tuple(args.ylim) if args.ylim and args.ylim[0] != args.ylim[1] else None
+    fig = draw(table, ylim=ylim)
     if args.label:
         fig.text(0.5, 0.5, args.label, ha="center", va="center", fontsize=15,
                  color="#e34948", alpha=0.30, rotation=18, zorder=10,
