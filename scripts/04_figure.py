@@ -40,6 +40,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from decimal import ROUND_HALF_UP, Decimal  # noqa: E402
+
 import matplotlib  # noqa: E402
 
 matplotlib.use("Agg")
@@ -54,12 +56,26 @@ from xconformal import config  # noqa: E402
 # coverage numbers stay in ink so identity is carried by the marks beside them.
 SERIES_COLORS = ("#2a78d6", "#eb6834")  # blue = raw, orange = ACI
 
+# Reader-facing names for the method keys used in the CSV. The tables keep the
+# code vocabulary; the figure should not show it.
+DISPLAY_NAMES = {"aci-variable": "marginal ACI"}
+
 # Hand-set y range for the printed figure; see the module docstring.
 DEFAULT_YLIM = (0.63, 0.95)
 INK_PRIMARY = "#0b0b0b"
 INK_SECONDARY = "#52514e"
 INK_MUTED = "#8a8a85"
 SURFACE = "#ffffff"
+
+
+def fmt3(value: float) -> str:
+    """Format a coverage value for display: 3 decimals, decimal round-half-up.
+
+    Display convention: round HALF-UP on the exact value at 3 decimal places.
+    Never round an already-rounded number -- 0.9104717 is 0.9105 at 4 places
+    and 0.910 at 3, but rounding the 4-place value again gives 0.911.
+    """
+    return str(Decimal(str(float(value))).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
 
 
 def style() -> None:
@@ -127,12 +143,12 @@ def draw(table: pd.DataFrame, ylim: tuple[float, float] | None = None) -> plt.Fi
         ax.vlines(x + dx, config.TARGET_COVERAGE, y, color=color, lw=1.6, alpha=0.55, zorder=2)
         # 2px surface ring keeps overlapping marks readable.
         ax.plot(x + dx, y, "o", ms=8, color=color, mec=SURFACE, mew=2.0,
-                ls="none", label=method, zorder=3)
+                ls="none", label=DISPLAY_NAMES.get(method, method), zorder=3)
         for xi, yi in zip(x + dx, y):
             if np.isnan(yi):
                 continue  # empty bin: annotated once per bin below, not once per method
             va, pad = ("bottom", 9) if yi >= config.TARGET_COVERAGE else ("top", -9)
-            ax.annotate(f"{yi:.3f}", xy=(xi, yi), xytext=(0, pad),
+            ax.annotate(fmt3(yi), xy=(xi, yi), xytext=(0, pad),
                         textcoords="offset points", ha="center", va=va,
                         fontsize=7.5, color=INK_PRIMARY, zorder=4)
 

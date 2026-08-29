@@ -382,3 +382,9 @@ Figure form signed off 2026-08-29: paired dots with a target rule (not grouped
 bars — a coverage level near 0.9 would force either a zero baseline that hides
 the effect or a truncated axis that misstates it), hand-set y range (0.63, 0.95),
 per-bin counts printed on the axes.
+
+Display rounding convention (2026-08-29): printed figure labels are the exact
+value rounded HALF-UP to 3 decimals via the `decimal` module (`04_figure.py:fmt3`).
+Tables above keep full precision; never re-round a displayed value — 0.9104717 is
+0.9105 at 4 places and 0.910 at 3, but rounding the 4-place value again gives a
+wrong 0.911.
