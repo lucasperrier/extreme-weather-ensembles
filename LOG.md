@@ -316,7 +316,7 @@ reported window, revisit eta) changes what §3 and §4 claim.
 worse-than-raw numbers all computed cleanly in the same run and are held
 pending the decision. No figure written, no RESULTS.md, nothing pushed.
 
-**Next.** Await the call on CHECK 2, then Phase 3 + 4 unchanged.
+**Next.** Decide CHECK 2, then Phase 3 + 4 unchanged.
 
 
 ### Sat, later — decision on CHECK 2, and release
