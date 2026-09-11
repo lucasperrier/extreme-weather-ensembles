@@ -1,6 +1,7 @@
 # paper/
 
-`main.tex` and `references.bib` live on Lucas' laptop and are copied in here; this
-directory is a placeholder so the repo layout matches. Figures are written to
-`$EVAL_ROOT` by `scripts/04_figure.py` (see `xconformal.config.FIGURE_PATH`) and
-copied in, not generated here.
+The two figures and `RESULTS.md`, copied from `$EVAL_ROOT` after
+`scripts/04_figure.py`. `RESULTS.md` is the paper's source of truth: it carries
+the commit hash, the archive count, the warm-start `c_0`, every table, and the
+diagnosis of the initialization lag. The manuscript source is not kept here; see
+the preprint linked from the top-level README.

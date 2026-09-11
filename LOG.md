@@ -172,7 +172,7 @@ Generation at 10:21 UTC: session `gen` alive, **12/452 inits**, **314 s/init**,
 ETA 38.4 h → finishes ~**Sat 00:45 UTC**. On pace.
 
 **Task 1 — spacing contract, written before the implementation.** Four tests,
-covering the brief's (a)/(b)/(c) plus a units guard:
+covering properties (a)/(b)/(c) of the spacing contract plus a units guard:
 `test_irregular_spacing_still_converges`,
 `test_no_update_is_applied_before_its_verification_time`,
 `test_spacing_change_leaves_no_trace_beyond_updates_in_flight`,
@@ -308,8 +308,8 @@ transient that no amount of calibration-year data can remove, because 2020 does
 not know what 2021 needs. Cost against the oracle: January **−0.0078**,
 February −0.0059, March −0.0042, June −0.0016, September −0.0006.
 
-**Decided.** Nothing. Escalated to Lucas per the standing rule — the response to
-a failed gate is his call, and every option (disclose as-is, shorten the
+**Decided.** Nothing yet. The response to a failed gate is a scientific
+decision, and every option (disclose as-is, shorten the
 reported window, revisit eta) changes what §3 and §4 claim.
 
 **STOPPED before Phase 3 and Phase 4.** The per-bin, land/ocean, width, c_t and
@@ -321,7 +321,7 @@ pending the decision. No figure written, no RESULTS.md, nothing pushed.
 
 ### Sat, later — decision on CHECK 2, and release
 
-**Decided (Lucas).** Option 1: **report all 12 months.** The Jan-Feb residual is
+**Decided.** Option 1: **report all 12 months.** The Jan-Feb residual is
 disclosed rather than windowed away, and is **reframed as a measurement** — the
 controller's adaptation lag under a real year-to-year shift in required padding
 (~0.009 in c, tracked at the 83-init time constant, cost decaying Jan −0.0078 to
@@ -366,5 +366,5 @@ truth, carrying the commit hash, the 452-file archive count, `c_0`, all Phase 2
 and Phase 3 tables, the four-control diagnosis, and the `1/w_k` arithmetic for
 the outlook.
 
-**Next.** Frozen. No code changes unless Lucas names a bug; improvements go to
+**Next.** Frozen. No code changes unless a bug is found; improvements go to
 RUNBOOK "post-deadline".

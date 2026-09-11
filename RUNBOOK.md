@@ -217,7 +217,7 @@ methods section can be written from this file rather than from memory.
 - [x] Figure-form sign-off, 2026-08-29. Paired dots + target rule, per-bin counts
       on the axes, `DEFAULT_YLIM = (0.63, 0.95)` in `04_figure.py`.
 - [ ] Nothing blocking. **The repo is frozen for the deadline** — no code changes
-      unless Lucas names a bug; improvements go to "post-deadline" below.
+      unless a bug is found; improvements go to "post-deadline" below.
 
 ---
 
